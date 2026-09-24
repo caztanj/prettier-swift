@@ -22,8 +22,12 @@ public func printJSNode(
 
     switch node {
     case let program as JSProgram:
-        let printedStatements = program.body.map { printJSNode($0, options: options, sourceText: sourceText) }
-        innerDoc = .concat(join(separator: .hardline, printedStatements) + [.hardline])
+        if program.body.isEmpty {
+            innerDoc = .empty
+        } else {
+            let printed = printStatementSequence(program.body, options: options, sourceText: sourceText)
+            innerDoc = .concat(printed + [.hardline])
+        }
 
     case let varDecl as JSVariableDeclaration:
         var declDocs: [Doc] = []
@@ -74,11 +78,10 @@ public func printJSNode(
         if block.body.isEmpty {
             innerDoc = .text("{}")
         } else {
-            let bodyDocs = block.body.map { printJSNode($0, options: options, sourceText: sourceText) }
-            let bodyGroup = join(separator: .hardline, bodyDocs)
+            let bodyDocs = printStatementSequence(block.body, options: options, sourceText: sourceText)
             innerDoc = .concat([
                 .text("{"),
-                .indent(.concat([.hardline, .concat(bodyGroup)])),
+                .indent(.concat([.hardline, .concat(bodyDocs)])),
                 .hardline,
                 .text("}")
             ])
@@ -299,4 +302,72 @@ private func shouldParenthesizeBinaryOperand(_ child: JSNode, parentOp: String, 
         }
     }
     return false
+}
+
+private func hasBlankLineBetween(current: JSNode, next: JSNode, in sourceText: String) -> Bool {
+    guard !sourceText.isEmpty else { return false }
+
+    let currentEnd: Int
+    if let maxTrailing = current.comments.filter({ $0.trailing }).map({ $0.range.upperBound }).max() {
+        currentEnd = max(current.sourceRange.upperBound, maxTrailing)
+    } else {
+        currentEnd = current.sourceRange.upperBound
+    }
+
+    let nextStart: Int
+    if let minLeading = next.comments.filter({ $0.leading }).map({ $0.range.lowerBound }).min() {
+        nextStart = min(next.sourceRange.lowerBound, minLeading)
+    } else {
+        nextStart = next.sourceRange.lowerBound
+    }
+
+    guard currentEnd > 0 && nextStart >= currentEnd else { return false }
+
+    let utf8 = sourceText.utf8
+    guard currentEnd <= utf8.count && nextStart <= utf8.count else { return false }
+
+    let startIdx = utf8.index(utf8.startIndex, offsetBy: currentEnd)
+    let endIdx = utf8.index(utf8.startIndex, offsetBy: nextStart)
+
+    var newlineCount = 0
+    var idx = startIdx
+    while idx < endIdx {
+        let byte = utf8[idx]
+        if byte == 0x0A { // '\n'
+            newlineCount += 1
+            if newlineCount >= 2 {
+                return true
+            }
+        }
+        idx = utf8.index(after: idx)
+    }
+
+    return false
+}
+
+private func printStatementSequence(
+    _ statements: [JSNode],
+    options: PrintOptions,
+    sourceText: String
+) -> [Doc] {
+    guard !statements.isEmpty else { return [] }
+    var docs: [Doc] = []
+
+    for i in 0..<statements.count {
+        let current = statements[i]
+        let currentDoc = printJSNode(current, options: options, sourceText: sourceText)
+        docs.append(currentDoc)
+
+        if i < statements.count - 1 {
+            let next = statements[i + 1]
+            if hasBlankLineBetween(current: current, next: next, in: sourceText) {
+                docs.append(.hardline)
+                docs.append(.hardline)
+            } else {
+                docs.append(.hardline)
+            }
+        }
+    }
+
+    return docs
 }

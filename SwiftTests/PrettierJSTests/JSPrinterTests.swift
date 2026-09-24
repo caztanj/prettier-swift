@@ -202,6 +202,40 @@ struct JSPrinterTests {
         #expect(asyncFormatted.contains("async (version: string): Promise<boolean> => {"))
     }
 
+    @Test("Preserve blank lines between statements and inside function blocks")
+    func testPreserveBlankLines() throws {
+        let input = """
+        import React from "react";
+
+        const a = 1;
+        const b = 2;
+
+        function demo() {
+            const x = 10;
+
+            return x;
+        }
+
+        export default demo;
+        """
+        let formatted = try formatJS(input)
+        #expect(formatted == """
+        import React from "react";
+
+        const a = 1;
+        const b = 2;
+
+        function demo() {
+          const x = 10;
+
+          return x;
+        }
+
+        export default demo;
+
+        """)
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()
