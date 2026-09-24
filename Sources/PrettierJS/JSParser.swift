@@ -196,10 +196,9 @@ private struct JSParserImpl {
             skipWhitespaceAndComments()
             let params = try parseParameterList()
             skipWhitespaceAndComments()
+            var returnType: String? = nil
             if index < source.endIndex && source[index] == ":" {
-                while index < source.endIndex && source[index] != "{" && source[index] != ";" {
-                    index = source.index(after: index)
-                }
+                returnType = scanReturnType()
             }
             skipWhitespaceAndComments()
             var body = JSBlockStatement(body: [])
@@ -209,7 +208,7 @@ private struct JSParserImpl {
                 index = source.index(after: index)
             }
             let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
-            return JSFunctionDeclaration(id: name, params: params, body: body, isAsync: isAsync, range: startUtf8..<endUtf8)
+            return JSFunctionDeclaration(id: name, params: params, body: body, isAsync: isAsync, returnType: returnType, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("return") {
@@ -407,6 +406,246 @@ private struct JSParserImpl {
         return JSBlockStatement(body: body, range: startUtf8..<endUtf8)
     }
 
+    private func formatParamString(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        var colonIndex: String.Index? = nil
+        var equalIndex: String.Index? = nil
+
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var angleDepth = 0
+        var inString: Character? = nil
+
+        var i = trimmed.startIndex
+        while i < trimmed.endIndex {
+            let ch = trimmed[i]
+            if let quote = inString {
+                if ch == "\\" {
+                    i = trimmed.index(after: i)
+                    if i < trimmed.endIndex { i = trimmed.index(after: i) }
+                    continue
+                } else if ch == quote {
+                    inString = nil
+                }
+            } else {
+                if ch == "\"" || ch == "'" || ch == "`" {
+                    inString = ch
+                } else if ch == "(" { parenDepth += 1 }
+                else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+                else if ch == "{" { braceDepth += 1 }
+                else if ch == "}" { braceDepth = max(0, braceDepth - 1) }
+                else if ch == "[" { bracketDepth += 1 }
+                else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+                else if ch == "<" { angleDepth += 1 }
+                else if ch == ">" { angleDepth = max(0, angleDepth - 1) }
+                else if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && angleDepth == 0 {
+                    if ch == ":" && colonIndex == nil && equalIndex == nil {
+                        colonIndex = i
+                    } else if ch == "=" && equalIndex == nil {
+                        let next = trimmed.index(after: i)
+                        let nextChar = next < trimmed.endIndex ? trimmed[next] : nil
+                        let prevChar = i > trimmed.startIndex ? trimmed[trimmed.index(before: i)] : nil
+                        if nextChar != "=" && nextChar != ">" && prevChar != "=" && prevChar != "!" && prevChar != "<" && prevChar != ">" {
+                            equalIndex = i
+                        }
+                    }
+                }
+            }
+            i = trimmed.index(after: i)
+        }
+
+        if let col = colonIndex {
+            var paramPart = String(trimmed[..<col]).trimmingCharacters(in: .whitespaces)
+            if paramPart.hasSuffix(" ?") {
+                paramPart = String(paramPart.dropLast(2)) + "?"
+            }
+            if let eq = equalIndex, eq > col {
+                let afterCol = trimmed.index(after: col)
+                let typePart = String(trimmed[afterCol..<eq]).trimmingCharacters(in: .whitespaces)
+                let afterEq = trimmed.index(after: eq)
+                let defaultPart = String(trimmed[afterEq...]).trimmingCharacters(in: .whitespaces)
+                return "\(paramPart): \(typePart) = \(defaultPart)"
+            } else {
+                let afterCol = trimmed.index(after: col)
+                let typePart = String(trimmed[afterCol...]).trimmingCharacters(in: .whitespaces)
+                return "\(paramPart): \(typePart)"
+            }
+        } else if let eq = equalIndex {
+            let paramPart = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
+            let afterEq = trimmed.index(after: eq)
+            let defaultPart = String(trimmed[afterEq...]).trimmingCharacters(in: .whitespaces)
+            return "\(paramPart) = \(defaultPart)"
+        }
+
+        return trimmed
+    }
+
+    private mutating func scanReturnType() -> String {
+        guard index < source.endIndex && source[index] == ":" else { return "" }
+        index = source.index(after: index)
+        skipWhitespaceAndComments()
+        let start = index
+        var angleDepth = 0
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+
+        while index < source.endIndex {
+            if angleDepth == 0 && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+                if source[index...].hasPrefix("=>") {
+                    break
+                }
+                if source[index] == ";" || source[index] == "{" || source[index] == "," || source[index] == ")" {
+                    break
+                }
+            }
+            let c = source[index]
+            if c == "<" { angleDepth += 1 }
+            else if c == ">" { angleDepth = max(0, angleDepth - 1) }
+            else if c == "(" { parenDepth += 1 }
+            else if c == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if c == "{" { braceDepth += 1 }
+            else if c == "}" { braceDepth = max(0, braceDepth - 1) }
+            else if c == "[" { bracketDepth += 1 }
+            else if c == "]" { bracketDepth = max(0, bracketDepth - 1) }
+            index = source.index(after: index)
+        }
+        return String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isArrowFunctionAhead() -> Bool {
+        guard index < source.endIndex && source[index] == "(" else { return false }
+        var lookIndex = source.index(after: index)
+        var parenDepth = 1
+        var braceDepth = 0
+        var bracketDepth = 0
+        var inString: Character? = nil
+
+        while lookIndex < source.endIndex && parenDepth > 0 {
+            let ch = source[lookIndex]
+            if let quote = inString {
+                if ch == "\\" {
+                    lookIndex = source.index(after: lookIndex)
+                    if lookIndex < source.endIndex {
+                        lookIndex = source.index(after: lookIndex)
+                    }
+                    continue
+                } else if ch == quote {
+                    inString = nil
+                }
+            } else {
+                if ch == "\"" || ch == "'" || ch == "`" {
+                    inString = ch
+                } else if ch == "/" && source.index(after: lookIndex) < source.endIndex {
+                    let next = source[source.index(after: lookIndex)]
+                    if next == "/" {
+                        lookIndex = source.index(after: lookIndex)
+                        while lookIndex < source.endIndex && source[lookIndex] != "\n" {
+                            lookIndex = source.index(after: lookIndex)
+                        }
+                        continue
+                    } else if next == "*" {
+                        lookIndex = source.index(after: lookIndex)
+                        while lookIndex < source.endIndex {
+                            if source[lookIndex] == "*" && source.index(after: lookIndex) < source.endIndex && source[source.index(after: lookIndex)] == "/" {
+                                lookIndex = source.index(lookIndex, offsetBy: 2)
+                                break
+                            }
+                            lookIndex = source.index(after: lookIndex)
+                        }
+                        continue
+                    }
+                } else if ch == "(" {
+                    parenDepth += 1
+                } else if ch == ")" {
+                    parenDepth -= 1
+                    if parenDepth == 0 {
+                        lookIndex = source.index(after: lookIndex)
+                        break
+                    }
+                } else if ch == "{" {
+                    braceDepth += 1
+                } else if ch == "}" {
+                    braceDepth = max(0, braceDepth - 1)
+                } else if ch == "[" {
+                    bracketDepth += 1
+                } else if ch == "]" {
+                    bracketDepth = max(0, bracketDepth - 1)
+                }
+            }
+            lookIndex = source.index(after: lookIndex)
+        }
+
+        guard parenDepth == 0 else { return false }
+
+        while lookIndex < source.endIndex {
+            let ch = source[lookIndex]
+            if ch.isWhitespace {
+                lookIndex = source.index(after: lookIndex)
+            } else if ch == "/" && source.index(after: lookIndex) < source.endIndex {
+                let next = source[source.index(after: lookIndex)]
+                if next == "/" {
+                    while lookIndex < source.endIndex && source[lookIndex] != "\n" {
+                        lookIndex = source.index(after: lookIndex)
+                    }
+                } else if next == "*" {
+                    lookIndex = source.index(after: lookIndex)
+                    while lookIndex < source.endIndex {
+                        if source[lookIndex] == "*" && source.index(after: lookIndex) < source.endIndex && source[source.index(after: lookIndex)] == "/" {
+                            lookIndex = source.index(lookIndex, offsetBy: 2)
+                            break
+                        }
+                        lookIndex = source.index(after: lookIndex)
+                    }
+                } else {
+                    break
+                }
+            } else {
+                break
+            }
+        }
+
+        guard lookIndex < source.endIndex else { return false }
+
+        if source[lookIndex...].hasPrefix("=>") {
+            return true
+        }
+
+        if source[lookIndex] == ":" {
+            lookIndex = source.index(after: lookIndex)
+            var typeAngleDepth = 0
+            var typeParenDepth = 0
+            var typeBraceDepth = 0
+            var typeBracketDepth = 0
+
+            while lookIndex < source.endIndex {
+                if typeAngleDepth == 0 && typeParenDepth == 0 && typeBraceDepth == 0 && typeBracketDepth == 0 {
+                    if source[lookIndex...].hasPrefix("=>") {
+                        return true
+                    }
+                    if source[lookIndex] == ";" || source[lookIndex] == "{" || source[lookIndex] == "," || source[lookIndex] == ")" {
+                        return false
+                    }
+                }
+                let c = source[lookIndex]
+                if c == "<" { typeAngleDepth += 1 }
+                else if c == ">" { typeAngleDepth = max(0, typeAngleDepth - 1) }
+                else if c == "(" { typeParenDepth += 1 }
+                else if c == ")" { typeParenDepth = max(0, typeParenDepth - 1) }
+                else if c == "{" { typeBraceDepth += 1 }
+                else if c == "}" { typeBraceDepth = max(0, typeBraceDepth - 1) }
+                else if c == "[" { typeBracketDepth += 1 }
+                else if c == "]" { typeBracketDepth = max(0, typeBracketDepth - 1) }
+                lookIndex = source.index(after: lookIndex)
+            }
+        }
+
+        return false
+    }
+
     private mutating func parseParameterList() throws -> [JSNode] {
         if index < source.endIndex && source[index] == "(" {
             index = source.index(after: index)
@@ -416,15 +655,55 @@ private struct JSParserImpl {
         var braceDepth = 0
         var bracketDepth = 0
         var currentParam = ""
+        var inString: Character? = nil
 
         while index < source.endIndex {
-            skipWhitespaceAndComments()
-            guard index < source.endIndex else { break }
-
             let ch = source[index]
-            if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && ch == ")" {
+
+            if inString == nil && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && ch == ")" {
                 index = source.index(after: index)
                 break
+            }
+
+            if let quote = inString {
+                currentParam.append(ch)
+                if ch == "\\" {
+                    index = source.index(after: index)
+                    if index < source.endIndex {
+                        currentParam.append(source[index])
+                    }
+                } else if ch == quote {
+                    inString = nil
+                }
+                index = source.index(after: index)
+                continue
+            }
+
+            if ch == "\"" || ch == "'" || ch == "`" {
+                inString = ch
+                currentParam.append(ch)
+                index = source.index(after: index)
+                continue
+            }
+
+            if ch == "/" && source.index(after: index) < source.endIndex {
+                let next = source[source.index(after: index)]
+                if next == "/" {
+                    while index < source.endIndex && source[index] != "\n" {
+                        index = source.index(after: index)
+                    }
+                    continue
+                } else if next == "*" {
+                    index = source.index(after: index)
+                    while index < source.endIndex {
+                        if source[index] == "*" && source.index(after: index) < source.endIndex && source[source.index(after: index)] == "/" {
+                            index = source.index(index, offsetBy: 2)
+                            break
+                        }
+                        index = source.index(after: index)
+                    }
+                    continue
+                }
             }
 
             if ch == "(" { parenDepth += 1 }
@@ -435,22 +714,28 @@ private struct JSParserImpl {
             else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
 
             if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && ch == "," {
-                let trimmed = currentParam.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    params.append(JSIdentifier(name: trimmed))
+                let formatted = formatParamString(currentParam)
+                if !formatted.isEmpty {
+                    params.append(JSIdentifier(name: formatted))
                 }
                 currentParam = ""
                 index = source.index(after: index)
                 continue
             }
 
-            currentParam.append(ch)
+            if ch.isWhitespace {
+                if !currentParam.isEmpty && !currentParam.hasSuffix(" ") {
+                    currentParam.append(" ")
+                }
+            } else {
+                currentParam.append(ch)
+            }
             index = source.index(after: index)
         }
 
-        let trimmed = currentParam.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            params.append(JSIdentifier(name: trimmed))
+        let formatted = formatParamString(currentParam)
+        if !formatted.isEmpty {
+            params.append(JSIdentifier(name: formatted))
         }
 
         return params
@@ -686,18 +971,106 @@ private struct JSParserImpl {
             return JSArrayExpression(elements: elements)
         }
 
-        if ch == "(" {
-            index = source.index(after: index)
+        if matchKeyword("function") {
+            _ = scanWord()
             skipWhitespaceAndComments()
-            if index < source.endIndex && source[index] == ")" {
-                index = source.index(after: index)
+            var name: JSIdentifier? = nil
+            if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                name = JSIdentifier(name: scanWord())
+            }
+            skipWhitespaceAndComments()
+            let params = try parseParameterList()
+            skipWhitespaceAndComments()
+            var returnType: String? = nil
+            if index < source.endIndex && source[index] == ":" {
+                returnType = scanReturnType()
+            }
+            skipWhitespaceAndComments()
+            var body = JSBlockStatement(body: [])
+            if index < source.endIndex && source[index] == "{" {
+                body = try parseBlockStatement()
+            }
+            return JSFunctionDeclaration(id: name, params: params, body: body, isAsync: false, returnType: returnType)
+        }
+
+        if matchKeyword("async") {
+            let saved = index
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            if matchKeyword("function") {
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                var name: JSIdentifier? = nil
+                if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                    name = JSIdentifier(name: scanWord())
+                }
+                skipWhitespaceAndComments()
+                let params = try parseParameterList()
+                skipWhitespaceAndComments()
+                var returnType: String? = nil
+                if index < source.endIndex && source[index] == ":" {
+                    returnType = scanReturnType()
+                }
+                skipWhitespaceAndComments()
+                var body = JSBlockStatement(body: [])
+                if index < source.endIndex && source[index] == "{" {
+                    body = try parseBlockStatement()
+                }
+                return JSFunctionDeclaration(id: name, params: params, body: body, isAsync: true, returnType: returnType)
+            } else if index < source.endIndex && source[index] == "(" && isArrowFunctionAhead() {
+                let params = try parseParameterList()
+                skipWhitespaceAndComments()
+                var returnType: String? = nil
+                if index < source.endIndex && source[index] == ":" {
+                    returnType = scanReturnType()
+                }
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index...].hasPrefix("=>") {
                     index = source.index(index, offsetBy: 2)
                     skipWhitespaceAndComments()
                     let body = (index < source.endIndex && source[index] == "{") ? try parseBlockStatement() : try parseExpression()
-                    return JSArrowFunctionExpression(params: [], body: body)
+                    return JSArrowFunctionExpression(params: params, body: body, isAsync: true, returnType: returnType)
                 }
+            } else if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                let savedBeforeWord = index
+                let paramWord = scanWord()
+                skipWhitespaceAndComments()
+                if index < source.endIndex && source[index...].hasPrefix("=>") {
+                    index = source.index(index, offsetBy: 2)
+                    skipWhitespaceAndComments()
+                    let body = (source[index] == "{") ? try parseBlockStatement() : try parseExpression()
+                    return JSArrowFunctionExpression(params: [JSIdentifier(name: paramWord)], body: body, isAsync: true)
+                }
+                index = savedBeforeWord
+                return JSIdentifier(name: "async")
+            } else {
+                index = saved
+                return JSIdentifier(name: scanWord())
+            }
+        }
+
+        if ch == "(" {
+            if isArrowFunctionAhead() {
+                let params = try parseParameterList()
+                skipWhitespaceAndComments()
+                var returnType: String? = nil
+                if index < source.endIndex && source[index] == ":" {
+                    returnType = scanReturnType()
+                }
+                skipWhitespaceAndComments()
+                if index < source.endIndex && source[index...].hasPrefix("=>") {
+                    index = source.index(index, offsetBy: 2)
+                    skipWhitespaceAndComments()
+                    let body = (index < source.endIndex && source[index] == "{") ? try parseBlockStatement() : try parseExpression()
+                    return JSArrowFunctionExpression(params: params, body: body, isAsync: false, returnType: returnType)
+                }
+                return JSArrowFunctionExpression(params: params, body: JSBlockStatement(body: []))
+            }
+
+            index = source.index(after: index)
+            skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == ")" {
+                index = source.index(after: index)
                 return JSIdentifier(name: "")
             }
 
@@ -717,13 +1090,6 @@ private struct JSParserImpl {
             }
             if index < source.endIndex && source[index] == ")" {
                 index = source.index(after: index)
-            }
-            skipWhitespaceAndComments()
-            if index < source.endIndex && source[index...].hasPrefix("=>") {
-                index = source.index(index, offsetBy: 2)
-                skipWhitespaceAndComments()
-                let body = (index < source.endIndex && source[index] == "{") ? try parseBlockStatement() : try parseExpression()
-                return JSArrowFunctionExpression(params: exprs, body: body)
             }
             return exprs.first ?? JSIdentifier(name: "")
         }

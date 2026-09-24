@@ -47,17 +47,28 @@ public func printJSNode(
         }
         let paramDocs = fn.params.map { printJSNode($0, options: options, sourceText: sourceText) }
         let paramsGroup = join(separator: .text(", "), paramDocs)
+        var returnTypeDoc: Doc = .empty
+        if let returnType = fn.returnType, !returnType.isEmpty {
+            returnTypeDoc = .text(": \(returnType)")
+        }
         let bodyDoc = printJSNode(fn.body, options: options, sourceText: sourceText)
-        innerDoc = .concat([.text("\(prefix)("), .concat(paramsGroup), .text(") "), bodyDoc])
+        innerDoc = .concat([.text("\(prefix)("), .concat(paramsGroup), .text(")"), returnTypeDoc, .text(" "), bodyDoc])
 
     case let arrow as JSArrowFunctionExpression:
         let paramDocs = arrow.params.map { printJSNode($0, options: options, sourceText: sourceText) }
         let paramsGroup = join(separator: .text(", "), paramDocs)
         let asyncPrefix = arrow.isAsync ? "async " : ""
         let paramsDoc = Doc.concat([.text("\(asyncPrefix)("), .concat(paramsGroup), .text(")")])
+        var returnTypeDoc: Doc = .empty
+        if let returnType = arrow.returnType, !returnType.isEmpty {
+            returnTypeDoc = .text(": \(returnType)")
+        }
 
-        let bodyDoc = printJSNode(arrow.body, options: options, sourceText: sourceText)
-        innerDoc = .concat([paramsDoc, .text(" => "), bodyDoc])
+        var bodyDoc = printJSNode(arrow.body, options: options, sourceText: sourceText)
+        if arrow.body is JSObjectExpression {
+            bodyDoc = .concat([.text("("), bodyDoc, .text(")")])
+        }
+        innerDoc = .concat([paramsDoc, returnTypeDoc, .text(" => "), bodyDoc])
 
     case let block as JSBlockStatement:
         if block.body.isEmpty {

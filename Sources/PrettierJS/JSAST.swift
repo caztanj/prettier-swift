@@ -63,12 +63,14 @@ public final class JSFunctionDeclaration: JSNode, @unchecked Sendable {
     public var params: [JSNode]
     public var body: JSBlockStatement
     public var isAsync: Bool
+    public var returnType: String?
 
-    public init(id: JSIdentifier?, params: [JSNode], body: JSBlockStatement, isAsync: Bool = false, range: Range<Int> = 0..<0) {
+    public init(id: JSIdentifier?, params: [JSNode], body: JSBlockStatement, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) {
         self.id = id
         self.params = params
         self.body = body
         self.isAsync = isAsync
+        self.returnType = returnType
         super.init(sourceRange: range)
     }
 
@@ -85,11 +87,13 @@ public final class JSArrowFunctionExpression: JSNode, @unchecked Sendable {
     public var params: [JSNode]
     public var body: JSNode
     public var isAsync: Bool
+    public var returnType: String?
 
-    public init(params: [JSNode], body: JSNode, isAsync: Bool = false, range: Range<Int> = 0..<0) {
+    public init(params: [JSNode], body: JSNode, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) {
         self.params = params
         self.body = body
         self.isAsync = isAsync
+        self.returnType = returnType
         super.init(sourceRange: range)
     }
 

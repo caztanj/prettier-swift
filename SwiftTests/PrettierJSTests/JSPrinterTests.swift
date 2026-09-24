@@ -179,7 +179,27 @@ struct JSPrinterTests {
         """
         let formatted = try formatJS(input)
         #expect(formatted.contains("calculate"))
-        #expect(formatted.contains("total:number"))
+        #expect(formatted.contains("total: number"))
+        #expect(formatted.contains(": number {"))
+    }
+
+    @Test("Format arrow functions with TypeScript type annotations")
+    func testArrowFunctionTypeAnnotations() throws {
+        let input = """
+        const validateInput = (value: string | null) => {
+            return true;
+        };
+        """
+        let formatted = try formatJS(input)
+        #expect(formatted.contains("(value: string | null) => {"))
+
+        let asyncInput = """
+        const checkVersion = async (version: string): Promise<boolean> => {
+            return true;
+        };
+        """
+        let asyncFormatted = try formatJS(asyncInput)
+        #expect(asyncFormatted.contains("async (version: string): Promise<boolean> => {"))
     }
 
     @Test("Plugin can format JS/TS by extension and parser name")
