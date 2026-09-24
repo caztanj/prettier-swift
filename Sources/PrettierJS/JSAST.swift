@@ -45,10 +45,12 @@ public final class JSVariableDeclaration: JSNode, @unchecked Sendable {
 public final class JSVariableDeclarator: JSNode, @unchecked Sendable {
     public var id: JSNode
     public var initValue: JSNode?
+    public var typeAnnotation: String?
 
-    public init(id: JSNode, initValue: JSNode?, range: Range<Int> = 0..<0) {
+    public init(id: JSNode, initValue: JSNode?, typeAnnotation: String? = nil, range: Range<Int> = 0..<0) {
         self.id = id
         self.initValue = initValue
+        self.typeAnnotation = typeAnnotation
         super.init(sourceRange: range)
     }
 
@@ -356,17 +358,67 @@ public final class JSImportSpecifier: JSNode, @unchecked Sendable {
     }
 }
 
-public final class JSExportNamedDeclaration: JSNode, @unchecked Sendable {
-    public var declaration: JSNode?
+public final class JSExportSpecifier: JSNode, @unchecked Sendable {
+    public var local: JSIdentifier
+    public var exported: JSIdentifier
+    public var isType: Bool
 
-    public init(declaration: JSNode?, range: Range<Int> = 0..<0) {
-        self.declaration = declaration
+    public init(local: JSIdentifier, exported: JSIdentifier, isType: Bool = false, range: Range<Int> = 0..<0) {
+        self.local = local
+        self.exported = exported
+        self.isType = isType
         super.init(sourceRange: range)
     }
 
     public override var childNodes: [any CommentAttachable] {
-        if let declaration { return [declaration] }
-        return []
+        [local, exported]
+    }
+}
+
+public final class JSExportNamedDeclaration: JSNode, @unchecked Sendable {
+    public var declaration: JSNode?
+    public var specifiers: [JSExportSpecifier]
+    public var source: JSLiteral?
+    public var isTypeOnly: Bool
+
+    public init(
+        declaration: JSNode? = nil,
+        specifiers: [JSExportSpecifier] = [],
+        source: JSLiteral? = nil,
+        isTypeOnly: Bool = false,
+        range: Range<Int> = 0..<0
+    ) {
+        self.declaration = declaration
+        self.specifiers = specifiers
+        self.source = source
+        self.isTypeOnly = isTypeOnly
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var list: [JSNode] = []
+        if let declaration { list.append(declaration) }
+        list.append(contentsOf: specifiers)
+        if let source { list.append(source) }
+        return list
+    }
+}
+
+public final class JSExportAllDeclaration: JSNode, @unchecked Sendable {
+    public var exported: JSIdentifier?
+    public var source: JSLiteral
+    public var isTypeOnly: Bool
+
+    public init(exported: JSIdentifier? = nil, source: JSLiteral, isTypeOnly: Bool = false, range: Range<Int> = 0..<0) {
+        self.exported = exported
+        self.source = source
+        self.isTypeOnly = isTypeOnly
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        if let exported { return [exported, source] }
+        return [source]
     }
 }
 
@@ -380,5 +432,142 @@ public final class JSExportDefaultDeclaration: JSNode, @unchecked Sendable {
 
     public override var childNodes: [any CommentAttachable] {
         [declaration]
+    }
+}
+
+public final class JSTypeAliasDeclaration: JSNode, @unchecked Sendable {
+    public var id: JSIdentifier
+    public var typeParameters: String?
+    public var typeAnnotation: String
+
+    public init(id: JSIdentifier, typeParameters: String? = nil, typeAnnotation: String, range: Range<Int> = 0..<0) {
+        self.id = id
+        self.typeParameters = typeParameters
+        self.typeAnnotation = typeAnnotation
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [id]
+    }
+}
+
+public final class JSInterfaceDeclaration: JSNode, @unchecked Sendable {
+    public var id: JSIdentifier
+    public var typeParameters: String?
+    public var extendsClause: String?
+    public var body: String
+
+    public init(id: JSIdentifier, typeParameters: String? = nil, extendsClause: String? = nil, body: String, range: Range<Int> = 0..<0) {
+        self.id = id
+        self.typeParameters = typeParameters
+        self.extendsClause = extendsClause
+        self.body = body
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [id]
+    }
+}
+
+public final class JSWhileStatement: JSNode, @unchecked Sendable {
+    public var test: JSNode
+    public var body: JSNode
+
+    public init(test: JSNode, body: JSNode, range: Range<Int> = 0..<0) {
+        self.test = test
+        self.body = body
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [test, body]
+    }
+}
+
+public final class JSForStatement: JSNode, @unchecked Sendable {
+    public var header: String
+    public var body: JSNode
+
+    public init(header: String, body: JSNode, range: Range<Int> = 0..<0) {
+        self.header = header
+        self.body = body
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [body]
+    }
+}
+
+public final class JSTryStatement: JSNode, @unchecked Sendable {
+    public var block: JSBlockStatement
+    public var handlerParam: String?
+    public var handler: JSBlockStatement?
+    public var finalizer: JSBlockStatement?
+
+    public init(
+        block: JSBlockStatement,
+        handlerParam: String? = nil,
+        handler: JSBlockStatement? = nil,
+        finalizer: JSBlockStatement? = nil,
+        range: Range<Int> = 0..<0
+    ) {
+        self.block = block
+        self.handlerParam = handlerParam
+        self.handler = handler
+        self.finalizer = finalizer
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var list: [JSNode] = [block]
+        if let handler { list.append(handler) }
+        if let finalizer { list.append(finalizer) }
+        return list
+    }
+}
+
+public final class JSThrowStatement: JSNode, @unchecked Sendable {
+    public var argument: JSNode
+
+    public init(argument: JSNode, range: Range<Int> = 0..<0) {
+        self.argument = argument
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [argument]
+    }
+}
+
+public final class JSNewExpression: JSNode, @unchecked Sendable {
+    public var callee: JSNode
+    public var arguments: [JSNode]
+
+    public init(callee: JSNode, arguments: [JSNode] = [], range: Range<Int> = 0..<0) {
+        self.callee = callee
+        self.arguments = arguments
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var children: [any CommentAttachable] = [callee]
+        children.append(contentsOf: arguments as [any CommentAttachable])
+        return children
+    }
+}
+
+public final class JSAwaitExpression: JSNode, @unchecked Sendable {
+    public var argument: JSNode
+
+    public init(argument: JSNode, range: Range<Int> = 0..<0) {
+        self.argument = argument
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [argument]
     }
 }

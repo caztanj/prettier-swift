@@ -33,11 +33,15 @@ public func printJSNode(
         var declDocs: [Doc] = []
         for decl in varDecl.declarations {
             let idDoc = printJSNode(decl.id, options: options, sourceText: sourceText)
+            var typeDoc: Doc = .empty
+            if let type = decl.typeAnnotation, !type.isEmpty {
+                typeDoc = .text(": \(type)")
+            }
             if let initVal = decl.initValue {
                 let initDoc = printJSNode(initVal, options: options, sourceText: sourceText)
-                declDocs.append(.concat([idDoc, .text(" = "), initDoc]))
+                declDocs.append(.concat([idDoc, typeDoc, .text(" = "), initDoc]))
             } else {
-                declDocs.append(idDoc)
+                declDocs.append(.concat([idDoc, typeDoc]))
             }
         }
         let joinedDecls = join(separator: .text(", "), declDocs)
@@ -136,7 +140,11 @@ public func printJSNode(
         } else {
             argDoc = printJSNode(un.argument, options: options, sourceText: sourceText)
         }
-        innerDoc = .concat([.text(un.operatorStr), argDoc])
+        if un.prefix {
+            innerDoc = .concat([.text(un.operatorStr), argDoc])
+        } else {
+            innerDoc = .concat([argDoc, .text(un.operatorStr)])
+        }
 
     case let call as JSCallExpression:
         let calleeDoc = printJSNode(call.callee, options: options, sourceText: sourceText)
@@ -245,17 +253,107 @@ public func printJSNode(
         innerDoc = .concat(parts)
 
     case let expNamed as JSExportNamedDeclaration:
+        let semiDoc: Doc = options.semi ? .text(";") : .empty
         if let decl = expNamed.declaration {
             let declDoc = printJSNode(decl, options: options, sourceText: sourceText)
             innerDoc = .concat([.text("export "), declDoc])
+        } else if !expNamed.specifiers.isEmpty {
+            let prefix = expNamed.isTypeOnly ? "export type " : "export "
+            let specDocs: [Doc] = expNamed.specifiers.map { spec in
+                let typePrefix = spec.isType ? "type " : ""
+                if spec.local.name == spec.exported.name {
+                    return .text("\(typePrefix)\(spec.local.name)")
+                } else {
+                    return .text("\(typePrefix)\(spec.local.name) as \(spec.exported.name)")
+                }
+            }
+            let joined = join(separator: .text(", "), specDocs)
+            let bracedDoc: Doc
+            if options.bracketSpacing {
+                bracedDoc = .concat([.text("{ "), .concat(joined), .text(" }")])
+            } else {
+                bracedDoc = .concat([.text("{"), .concat(joined), .text("}")])
+            }
+            if let source = expNamed.source {
+                let sourceDoc = printJSNode(source, options: options, sourceText: sourceText)
+                innerDoc = .concat([.text(prefix), bracedDoc, .text(" from "), sourceDoc, semiDoc])
+            } else {
+                innerDoc = .concat([.text(prefix), bracedDoc, semiDoc])
+            }
         } else {
-            innerDoc = .text("export;")
+            innerDoc = .concat([.text("export"), semiDoc])
+        }
+
+    case let expAll as JSExportAllDeclaration:
+        let semiDoc: Doc = options.semi ? .text(";") : .empty
+        let prefix = expAll.isTypeOnly ? "export type * " : "export * "
+        let sourceDoc = printJSNode(expAll.source, options: options, sourceText: sourceText)
+        if let exported = expAll.exported {
+            innerDoc = .concat([.text("\(prefix)as \(exported.name) from "), sourceDoc, semiDoc])
+        } else {
+            innerDoc = .concat([.text("\(prefix)from "), sourceDoc, semiDoc])
         }
 
     case let expDef as JSExportDefaultDeclaration:
         let declDoc = printJSNode(expDef.declaration, options: options, sourceText: sourceText)
+        if expDef.declaration is JSFunctionDeclaration {
+            innerDoc = .concat([.text("export default "), declDoc])
+        } else {
+            let semiDoc: Doc = options.semi ? .text(";") : .empty
+            innerDoc = .concat([.text("export default "), declDoc, semiDoc])
+        }
+
+    case let typeAlias as JSTypeAliasDeclaration:
         let semiDoc: Doc = options.semi ? .text(";") : .empty
-        innerDoc = .concat([.text("export default "), declDoc, semiDoc])
+        let typeParams = typeAlias.typeParameters ?? ""
+        innerDoc = .concat([.text("type \(typeAlias.id.name)\(typeParams) = "), .text(typeAlias.typeAnnotation), semiDoc])
+
+    case let interfaceDecl as JSInterfaceDeclaration:
+        let typeParams = interfaceDecl.typeParameters ?? ""
+        let extendsPart = interfaceDecl.extendsClause != nil ? " extends \(interfaceDecl.extendsClause!)" : ""
+        let bodyDoc = interfaceDecl.body
+        innerDoc = .concat([.text("interface \(interfaceDecl.id.name)\(typeParams)\(extendsPart) "), .text(bodyDoc)])
+
+    case let whileStmt as JSWhileStatement:
+        let testDoc = printJSNode(whileStmt.test, options: options, sourceText: sourceText)
+        let bodyDoc = printJSNode(whileStmt.body, options: options, sourceText: sourceText)
+        innerDoc = .concat([.text("while ("), testDoc, .text(") "), bodyDoc])
+
+    case let forStmt as JSForStatement:
+        let bodyDoc = printJSNode(forStmt.body, options: options, sourceText: sourceText)
+        innerDoc = .concat([.text("for (\(forStmt.header)) "), bodyDoc])
+
+    case let tryStmt as JSTryStatement:
+        let blockDoc = printJSNode(tryStmt.block, options: options, sourceText: sourceText)
+        var parts: [Doc] = [.text("try "), blockDoc]
+        if let handler = tryStmt.handler {
+            let handlerDoc = printJSNode(handler, options: options, sourceText: sourceText)
+            let paramPart = tryStmt.handlerParam != nil ? " (\(tryStmt.handlerParam!))" : ""
+            parts.append(.text(" catch\(paramPart) "))
+            parts.append(handlerDoc)
+        }
+        if let finalizer = tryStmt.finalizer {
+            let finalizerDoc = printJSNode(finalizer, options: options, sourceText: sourceText)
+            parts.append(.text(" finally "))
+            parts.append(finalizerDoc)
+        }
+        innerDoc = .concat(parts)
+
+    case let throwStmt as JSThrowStatement:
+        let argDoc = printJSNode(throwStmt.argument, options: options, sourceText: sourceText)
+        let semiDoc: Doc = options.semi ? .text(";") : .empty
+        innerDoc = .concat([.text("throw "), argDoc, semiDoc])
+
+    case let newExpr as JSNewExpression:
+        let calleeDoc = printJSNode(newExpr.callee, options: options, sourceText: sourceText)
+        let argDocs = newExpr.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
+        let argsGroup = join(separator: .text(", "), argDocs)
+        innerDoc = .concat([.text("new "), calleeDoc, .text("("), .concat(argsGroup), .text(")")])
+
+
+    case let awaitExpr as JSAwaitExpression:
+        let argDoc = printJSNode(awaitExpr.argument, options: options, sourceText: sourceText)
+        innerDoc = .concat([.text("await "), argDoc])
 
     default:
         innerDoc = .empty

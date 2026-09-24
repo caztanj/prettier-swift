@@ -140,8 +140,52 @@ private struct JSParserImpl {
             while true {
                 skipWhitespaceAndComments()
                 let before = index
-                let id = scanWord()
-                let idNode = JSIdentifier(name: id)
+                let idNode: JSNode
+                if index < source.endIndex && source[index] == "{" {
+                    let start = index
+                    var depth = 0
+                    while index < source.endIndex {
+                        let c = source[index]
+                        if c == "{" { depth += 1 }
+                        else if c == "}" {
+                            depth -= 1
+                            if depth == 0 {
+                                index = source.index(after: index)
+                                break
+                            }
+                        }
+                        index = source.index(after: index)
+                    }
+                    let patternText = String(source[start..<index])
+                    idNode = JSIdentifier(name: formatParamString(patternText))
+                } else if index < source.endIndex && source[index] == "[" {
+                    let start = index
+                    var depth = 0
+                    while index < source.endIndex {
+                        let c = source[index]
+                        if c == "[" { depth += 1 }
+                        else if c == "]" {
+                            depth -= 1
+                            if depth == 0 {
+                                index = source.index(after: index)
+                                break
+                            }
+                        }
+                        index = source.index(after: index)
+                    }
+                    let patternText = String(source[start..<index])
+                    idNode = JSIdentifier(name: formatParamString(patternText))
+                } else {
+                    let id = scanWord()
+                    idNode = JSIdentifier(name: id)
+                }
+
+                skipWhitespaceAndComments()
+                var typeAnnotation: String? = nil
+                if index < source.endIndex && source[index] == ":" {
+                    typeAnnotation = scanVariableTypeAnnotation()
+                }
+
                 skipWhitespaceAndComments()
                 var initVal: JSNode? = nil
                 if index < source.endIndex && source[index] == "=" {
@@ -149,7 +193,7 @@ private struct JSParserImpl {
                     skipWhitespaceAndComments()
                     initVal = try parseExpression()
                 }
-                declarators.append(JSVariableDeclarator(id: idNode, initValue: initVal))
+                declarators.append(JSVariableDeclarator(id: idNode, initValue: initVal, typeAnnotation: typeAnnotation))
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "," {
                     index = source.index(after: index)
@@ -361,15 +405,327 @@ private struct JSParserImpl {
             if matchKeyword("default") {
                 _ = scanWord()
                 skipWhitespaceAndComments()
-                let expr = try parseExpression()
+                if matchKeyword("function") || matchKeyword("async") {
+                    let decl = try parseStatement() ?? JSBlockStatement(body: [])
+                    let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                    return JSExportDefaultDeclaration(declaration: decl, range: startUtf8..<endUtf8)
+                } else {
+                    let expr = try parseExpression()
+                    consumeSemicolon()
+                    let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                    return JSExportDefaultDeclaration(declaration: expr, range: startUtf8..<endUtf8)
+                }
+            }
+
+            var isTypeOnly = false
+            if matchKeyword("type") {
+                let saved = index
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                if index < source.endIndex && (source[index] == "{" || source[index] == "*") {
+                    isTypeOnly = true
+                } else {
+                    index = saved
+                }
+            }
+
+            if index < source.endIndex && source[index] == "*" {
+                index = source.index(after: index)
+                skipWhitespaceAndComments()
+                var exportedName: JSIdentifier? = nil
+                if matchKeyword("as") {
+                    _ = scanWord()
+                    skipWhitespaceAndComments()
+                    exportedName = JSIdentifier(name: scanWord())
+                    skipWhitespaceAndComments()
+                }
+                if matchKeyword("from") {
+                    _ = scanWord()
+                    skipWhitespaceAndComments()
+                }
+                let sourceLit = parseStringLiteral()
                 consumeSemicolon()
                 let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
-                return JSExportDefaultDeclaration(declaration: expr, range: startUtf8..<endUtf8)
-            } else {
-                let decl = try parseStatement()
-                let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
-                return JSExportNamedDeclaration(declaration: decl, range: startUtf8..<endUtf8)
+                return JSExportAllDeclaration(exported: exportedName, source: sourceLit, isTypeOnly: isTypeOnly, range: startUtf8..<endUtf8)
             }
+
+            if index < source.endIndex && source[index] == "{" {
+                index = source.index(after: index)
+                var specifiers: [JSExportSpecifier] = []
+                while index < source.endIndex && source[index] != "}" {
+                    skipWhitespaceAndComments()
+                    if source[index] == "}" { break }
+                    let before = index
+                    var isSpecType = false
+                    if matchKeyword("type") {
+                        let saved = index
+                        _ = scanWord()
+                        skipWhitespaceAndComments()
+                        if index < source.endIndex && source[index] != "," && source[index] != "}" && !matchKeyword("as") {
+                            isSpecType = true
+                        } else {
+                            index = saved
+                        }
+                    }
+                    let localName = scanWord()
+                    var exportedName = localName
+                    skipWhitespaceAndComments()
+                    if matchKeyword("as") {
+                        _ = scanWord()
+                        skipWhitespaceAndComments()
+                        exportedName = scanWord()
+                    }
+                    specifiers.append(JSExportSpecifier(
+                        local: JSIdentifier(name: localName),
+                        exported: JSIdentifier(name: exportedName),
+                        isType: isSpecType
+                    ))
+                    skipWhitespaceAndComments()
+                    if index < source.endIndex && source[index] == "," {
+                        index = source.index(after: index)
+                    }
+                    if index == before && index < source.endIndex {
+                        index = source.index(after: index)
+                    }
+                }
+                if index < source.endIndex && source[index] == "}" {
+                    index = source.index(after: index)
+                }
+                skipWhitespaceAndComments()
+                var sourceLit: JSLiteral? = nil
+                if matchKeyword("from") {
+                    _ = scanWord()
+                    skipWhitespaceAndComments()
+                    sourceLit = parseStringLiteral()
+                }
+                consumeSemicolon()
+                let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                return JSExportNamedDeclaration(
+                    declaration: nil,
+                    specifiers: specifiers,
+                    source: sourceLit,
+                    isTypeOnly: isTypeOnly,
+                    range: startUtf8..<endUtf8
+                )
+            }
+
+            let decl = try parseStatement()
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSExportNamedDeclaration(declaration: decl, range: startUtf8..<endUtf8)
+        }
+
+        if matchKeyword("type") {
+            let saved = index
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                let name = scanWord()
+                skipWhitespaceAndComments()
+                var typeParams: String? = nil
+                if index < source.endIndex && source[index] == "<" {
+                    let start = index
+                    var depth = 0
+                    while index < source.endIndex {
+                        let c = source[index]
+                        if c == "<" { depth += 1 }
+                        else if c == ">" {
+                            depth -= 1
+                            if depth == 0 {
+                                index = source.index(after: index)
+                                break
+                            }
+                        }
+                        index = source.index(after: index)
+                    }
+                    typeParams = String(source[start..<index])
+                }
+                skipWhitespaceAndComments()
+                if index < source.endIndex && source[index] == "=" {
+                    index = source.index(after: index)
+                    skipWhitespaceAndComments()
+                    let start = index
+                    var parenDepth = 0
+                    var braceDepth = 0
+                    var bracketDepth = 0
+                    var angleDepth = 0
+                    while index < source.endIndex {
+                        if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && angleDepth == 0 {
+                            if source[index] == ";" {
+                                break
+                            }
+                        }
+                        let c = source[index]
+                        if c == "(" { parenDepth += 1 }
+                        else if c == ")" { parenDepth = max(0, parenDepth - 1) }
+                        else if c == "{" { braceDepth += 1 }
+                        else if c == "}" { braceDepth = max(0, braceDepth - 1) }
+                        else if c == "[" { bracketDepth += 1 }
+                        else if c == "]" { bracketDepth = max(0, bracketDepth - 1) }
+                        else if c == "<" { angleDepth += 1 }
+                        else if c == ">" { angleDepth = max(0, angleDepth - 1) }
+                        index = source.index(after: index)
+                    }
+                    let typeDef = String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    consumeSemicolon()
+                    let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                    return JSTypeAliasDeclaration(id: JSIdentifier(name: name), typeParameters: typeParams, typeAnnotation: typeDef, range: startUtf8..<endUtf8)
+                }
+            }
+            index = saved
+        }
+
+        if matchKeyword("interface") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let name = scanWord()
+            skipWhitespaceAndComments()
+            var typeParams: String? = nil
+            if index < source.endIndex && source[index] == "<" {
+                let start = index
+                var depth = 0
+                while index < source.endIndex {
+                    let c = source[index]
+                    if c == "<" { depth += 1 }
+                    else if c == ">" {
+                        depth -= 1
+                        if depth == 0 {
+                            index = source.index(after: index)
+                            break
+                        }
+                    }
+                    index = source.index(after: index)
+                }
+                typeParams = String(source[start..<index])
+            }
+            skipWhitespaceAndComments()
+            var extendsClause: String? = nil
+            if matchKeyword("extends") {
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                let start = index
+                while index < source.endIndex && source[index] != "{" {
+                    index = source.index(after: index)
+                }
+                extendsClause = String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            skipWhitespaceAndComments()
+            var bodyText = "{}"
+            if index < source.endIndex && source[index] == "{" {
+                let start = index
+                var depth = 0
+                while index < source.endIndex {
+                    let c = source[index]
+                    if c == "{" { depth += 1 }
+                    else if c == "}" {
+                        depth -= 1
+                        if depth == 0 {
+                            index = source.index(after: index)
+                            break
+                        }
+                    }
+                    index = source.index(after: index)
+                }
+                bodyText = String(source[start..<index])
+            }
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSInterfaceDeclaration(
+                id: JSIdentifier(name: name),
+                typeParameters: typeParams,
+                extendsClause: extendsClause,
+                body: bodyText,
+                range: startUtf8..<endUtf8
+            )
+        }
+
+        if matchKeyword("while") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == "(" {
+                index = source.index(after: index)
+            }
+            let testExpr = try parseExpression()
+            skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == ")" {
+                index = source.index(after: index)
+            }
+            skipWhitespaceAndComments()
+            let body = try parseStatement() ?? JSBlockStatement(body: [])
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSWhileStatement(test: testExpr, body: body, range: startUtf8..<endUtf8)
+        }
+
+        if matchKeyword("for") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == "(" {
+                index = source.index(after: index)
+            }
+            let start = index
+            var parenDepth = 0
+            while index < source.endIndex {
+                let c = source[index]
+                if c == "(" { parenDepth += 1 }
+                else if c == ")" {
+                    if parenDepth == 0 {
+                        break
+                    }
+                    parenDepth -= 1
+                }
+                index = source.index(after: index)
+            }
+            let header = String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if index < source.endIndex && source[index] == ")" {
+                index = source.index(after: index)
+            }
+            skipWhitespaceAndComments()
+            let body = try parseStatement() ?? JSBlockStatement(body: [])
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSForStatement(header: header, body: body, range: startUtf8..<endUtf8)
+        }
+
+        if matchKeyword("try") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let block = try parseBlockStatement()
+            skipWhitespaceAndComments()
+            var handlerParam: String? = nil
+            var handler: JSBlockStatement? = nil
+            if matchKeyword("catch") {
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                if index < source.endIndex && source[index] == "(" {
+                    index = source.index(after: index)
+                    skipWhitespaceAndComments()
+                    let paramStart = index
+                    while index < source.endIndex && source[index] != ")" {
+                        index = source.index(after: index)
+                    }
+                    handlerParam = String(source[paramStart..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if index < source.endIndex && source[index] == ")" {
+                        index = source.index(after: index)
+                    }
+                    skipWhitespaceAndComments()
+                }
+                handler = try parseBlockStatement()
+                skipWhitespaceAndComments()
+            }
+            var finalizer: JSBlockStatement? = nil
+            if matchKeyword("finally") {
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                finalizer = try parseBlockStatement()
+            }
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSTryStatement(block: block, handlerParam: handlerParam, handler: handler, finalizer: finalizer, range: startUtf8..<endUtf8)
+        }
+
+        if matchKeyword("throw") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let arg = try parseExpression()
+            consumeSemicolon()
+            let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+            return JSThrowStatement(argument: arg, range: startUtf8..<endUtf8)
         }
 
         let expr = try parseExpression()
@@ -515,6 +871,37 @@ private struct JSParserImpl {
         }
         return String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private mutating func scanVariableTypeAnnotation() -> String {
+        guard index < source.endIndex && source[index] == ":" else { return "" }
+        index = source.index(after: index)
+        skipWhitespaceAndComments()
+        let start = index
+        var angleDepth = 0
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+
+        while index < source.endIndex {
+            if angleDepth == 0 && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+                if source[index] == "=" || source[index] == ";" || source[index] == "," || source[index] == "}" {
+                    break
+                }
+            }
+            let c = source[index]
+            if c == "<" { angleDepth += 1 }
+            else if c == ">" { angleDepth = max(0, angleDepth - 1) }
+            else if c == "(" { parenDepth += 1 }
+            else if c == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if c == "{" { braceDepth += 1 }
+            else if c == "}" { braceDepth = max(0, braceDepth - 1) }
+            else if c == "[" { bracketDepth += 1 }
+            else if c == "]" { bracketDepth = max(0, bracketDepth - 1) }
+            index = source.index(after: index)
+        }
+        return String(source[start..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
 
     private func isArrowFunctionAhead() -> Bool {
         guard index < source.endIndex && source[index] == "(" else { return false }
@@ -758,7 +1145,8 @@ private struct JSParserImpl {
 
             index = source.index(index, offsetBy: op.count)
             skipWhitespaceAndComments()
-            let right = try parseBinaryExpression(minPrecedence: prec + 1)
+            let isAssignment = op.hasSuffix("=") && op != "==" && op != "===" && op != "!=" && op != "!==" && op != "<=" && op != ">="
+            let right = try parseBinaryExpression(minPrecedence: isAssignment ? prec : prec + 1)
             left = JSBinaryExpression(operatorStr: op, left: left, right: right)
         }
 
@@ -766,15 +1154,34 @@ private struct JSParserImpl {
     }
 
     private func peekBinaryOperator() -> (String, Int)? {
+        if matchKeyword("instanceof") {
+            return ("instanceof", 9)
+        }
+        if matchKeyword("in") {
+            return ("in", 9)
+        }
+
         let operators: [(String, Int)] = [
-            ("??", 1),
-            ("||", 2),
-            ("&&", 3),
-            ("===", 6), ("!==", 6), ("==", 6), ("!=", 6),
-            ("<=", 7), (">=", 7), ("<", 7), (">", 7),
-            ("+", 9), ("-", 9),
-            ("*", 10), ("/", 10), ("%", 10),
-            ("=", 0)
+            ("===", 8), ("!==", 8),
+            (">>>=", 1), (">>>", 10),
+            (">>=", 1), (">>", 10),
+            ("<<=", 1), ("<<", 10),
+            ("<=", 9), (">=", 9),
+            ("==", 8), ("!=", 8),
+            ("??=", 1), ("||=", 1), ("&&=", 1),
+            ("**=", 1), ("**", 13),
+            ("+=", 1), ("-=", 1), ("*=", 1), ("/=", 1), ("%=", 1),
+            ("&=", 1), ("^=", 1), ("|=", 1),
+            ("??", 2),
+            ("||", 3),
+            ("&&", 4),
+            ("|", 5),
+            ("^", 6),
+            ("&", 7),
+            ("<", 9), (">", 9),
+            ("+", 11), ("-", 11),
+            ("*", 12), ("/", 12), ("%", 12),
+            ("=", 1)
         ]
         for (op, prec) in operators {
             if source[index...].hasPrefix(op) {
@@ -791,6 +1198,56 @@ private struct JSParserImpl {
         skipWhitespaceAndComments()
         guard index < source.endIndex else {
             return JSIdentifier(name: "")
+        }
+
+        if matchKeyword("await") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let argument = try parseUnaryOrPrimary()
+            return JSAwaitExpression(argument: argument)
+        }
+
+        if matchKeyword("new") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let target = try parsePostfix()
+            if let call = target as? JSCallExpression {
+                return JSNewExpression(callee: call.callee, arguments: call.arguments)
+            } else {
+                return JSNewExpression(callee: target, arguments: [])
+            }
+        }
+
+        if matchKeyword("typeof") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let operand = try parseUnaryOrPrimary()
+            return JSUnaryExpression(operatorStr: "typeof ", prefix: true, argument: operand)
+        }
+
+        if matchKeyword("void") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let operand = try parseUnaryOrPrimary()
+            return JSUnaryExpression(operatorStr: "void ", prefix: true, argument: operand)
+        }
+
+        if matchKeyword("delete") {
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            let operand = try parseUnaryOrPrimary()
+            return JSUnaryExpression(operatorStr: "delete ", prefix: true, argument: operand)
+        }
+
+        if source[index...].hasPrefix("++") {
+            index = source.index(index, offsetBy: 2)
+            let operand = try parseUnaryOrPrimary()
+            return JSUnaryExpression(operatorStr: "++", prefix: true, argument: operand)
+        }
+        if source[index...].hasPrefix("--") {
+            index = source.index(index, offsetBy: 2)
+            let operand = try parseUnaryOrPrimary()
+            return JSUnaryExpression(operatorStr: "--", prefix: true, argument: operand)
         }
 
         let ch = source[index]
@@ -810,7 +1267,13 @@ private struct JSParserImpl {
             skipWhitespaceAndComments()
             guard index < source.endIndex else { break }
 
-            if source[index] == "(" {
+            if source[index...].hasPrefix("++") {
+                index = source.index(index, offsetBy: 2)
+                expr = JSUnaryExpression(operatorStr: "++", prefix: false, argument: expr)
+            } else if source[index...].hasPrefix("--") {
+                index = source.index(index, offsetBy: 2)
+                expr = JSUnaryExpression(operatorStr: "--", prefix: false, argument: expr)
+            } else if source[index] == "(" {
                 index = source.index(after: index)
                 var args: [JSNode] = []
                 while index < source.endIndex && source[index] != ")" {

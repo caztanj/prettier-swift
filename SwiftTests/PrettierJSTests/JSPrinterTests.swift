@@ -236,6 +236,137 @@ struct JSPrinterTests {
         """)
     }
 
+    @Test("Format export statements")
+    func testExportStatements() throws {
+        let input = """
+        export default function App() {
+          return 42;
+        }
+
+        export { a, b, c as d };
+        export { x, y } from "./module";
+        export * from "./module";
+        export type { User } from "./types";
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        export default function App() {
+          return 42;
+        }
+
+        export { a, b, c as d };
+        export { x, y } from "./module";
+        export * from "./module";
+        export type { User } from "./types";
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Format TypeScript type alias and interface declarations")
+    func testTypeScriptDeclarations() throws {
+        let input = """
+        type ID = string | number;
+
+        interface User {
+          id: ID;
+          name: string;
+        }
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        type ID = string | number;
+
+        interface User {
+          id: ID;
+          name: string;
+        }
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Format variable declarations with type annotations and destructuring")
+    func testVariableTypesAndDestructuring() throws {
+        let input = """
+        const count: number = 0;
+        let user: User | null = null;
+        const { id, name } = user;
+        const [first, second] = items;
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const count: number = 0;
+        let user: User | null = null;
+        const { id, name } = user;
+        const [first, second] = items;
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Format control flow statements: while, for, try-catch-finally, throw")
+    func testControlFlowStatements() throws {
+        let input = """
+        while (active) {
+          doWork();
+        }
+
+        for (let i = 0; i < 10; i++) {
+          total += i;
+        }
+
+        try {
+          risky();
+        } catch (err) {
+          handle(err);
+        } finally {
+          cleanup();
+        }
+
+        throw new Error("Failed");
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        while (active) {
+          doWork();
+        }
+
+        for (let i = 0; i < 10; i++) {
+          total += i;
+        }
+
+        try {
+          risky();
+        } catch (err) {
+          handle(err);
+        } finally {
+          cleanup();
+        }
+
+        throw new Error("Failed");
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Format await, new, and typeof expressions")
+    func testUnaryAndAwaitNewExpressions() throws {
+        let input = """
+        const res = await fetchData();
+        const client = new Client("url");
+        const isString = typeof val === "string";
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const res = await fetchData();
+        const client = new Client("url");
+        const isString = typeof val === "string";
+
+        """
+        #expect(formatted == expected)
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()
