@@ -153,7 +153,8 @@ func run() -> Int32 {
                                 enumerator.skipDescendants()
                                 continue
                             }
-                            if PluginRegistry.shared.findPlugin(filePath: filePath, parserName: config.parser) != nil {
+                            let isRegular = (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile ?? true
+                            if isRegular && PluginRegistry.shared.findPlugin(filePath: filePath, parserName: config.parser) != nil {
                                 result.append(filePath)
                             }
                         }

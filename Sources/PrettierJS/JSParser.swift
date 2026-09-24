@@ -184,9 +184,30 @@ private struct JSParserImpl {
                 name = JSIdentifier(name: scanWord())
             }
             skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == "<" {
+                var depth = 0
+                while index < source.endIndex {
+                    let ch = source[index]
+                    if ch == "<" { depth += 1 }
+                    else if ch == ">" { depth -= 1; if depth == 0 { index = source.index(after: index); break } }
+                    index = source.index(after: index)
+                }
+            }
+            skipWhitespaceAndComments()
             let params = try parseParameterList()
             skipWhitespaceAndComments()
-            let body = try parseBlockStatement()
+            if index < source.endIndex && source[index] == ":" {
+                while index < source.endIndex && source[index] != "{" && source[index] != ";" {
+                    index = source.index(after: index)
+                }
+            }
+            skipWhitespaceAndComments()
+            var body = JSBlockStatement(body: [])
+            if index < source.endIndex && source[index] == "{" {
+                body = try parseBlockStatement()
+            } else if index < source.endIndex && source[index] == ";" {
+                index = source.index(after: index)
+            }
             let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
             return JSFunctionDeclaration(id: name, params: params, body: body, isAsync: isAsync, range: startUtf8..<endUtf8)
         }
@@ -319,19 +340,47 @@ private struct JSParserImpl {
             index = source.index(after: index)
         }
         var params: [JSNode] = []
-        while index < source.endIndex && source[index] != ")" {
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var currentParam = ""
+
+        while index < source.endIndex {
             skipWhitespaceAndComments()
-            if source[index] == ")" { break }
-            let name = scanWord()
-            params.append(JSIdentifier(name: name))
-            skipWhitespaceAndComments()
-            if index < source.endIndex && source[index] == "," {
+            guard index < source.endIndex else { break }
+
+            let ch = source[index]
+            if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && ch == ")" {
                 index = source.index(after: index)
+                break
             }
-        }
-        if index < source.endIndex && source[index] == ")" {
+
+            if ch == "(" { parenDepth += 1 }
+            else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if ch == "{" { braceDepth += 1 }
+            else if ch == "}" { braceDepth = max(0, braceDepth - 1) }
+            else if ch == "[" { bracketDepth += 1 }
+            else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+
+            if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && ch == "," {
+                let trimmed = currentParam.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    params.append(JSIdentifier(name: trimmed))
+                }
+                currentParam = ""
+                index = source.index(after: index)
+                continue
+            }
+
+            currentParam.append(ch)
             index = source.index(after: index)
         }
+
+        let trimmed = currentParam.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            params.append(JSIdentifier(name: trimmed))
+        }
+
         return params
     }
 
@@ -372,6 +421,9 @@ private struct JSParserImpl {
         ]
         for (op, prec) in operators {
             if source[index...].hasPrefix(op) {
+                if op == "=" && source[index...].hasPrefix("=>") {
+                    continue
+                }
                 return (op, prec)
             }
         }
@@ -385,7 +437,7 @@ private struct JSParserImpl {
         }
 
         let ch = source[index]
-        if ch == "!" || ch == "-" || ch == "+" || ch == "~" {
+        if ch == "!" || ch == "~" || ch == "+" || ch == "-" {
             index = source.index(after: index)
             let operand = try parseUnaryOrPrimary()
             return JSUnaryExpression(operatorStr: String(ch), prefix: true, argument: operand)
@@ -407,9 +459,13 @@ private struct JSParserImpl {
                 while index < source.endIndex && source[index] != ")" {
                     skipWhitespaceAndComments()
                     if source[index] == ")" { break }
+                    let before = index
                     args.append(try parseExpression())
                     skipWhitespaceAndComments()
                     if index < source.endIndex && source[index] == "," {
+                        index = source.index(after: index)
+                    }
+                    if index == before && index < source.endIndex {
                         index = source.index(after: index)
                     }
                 }

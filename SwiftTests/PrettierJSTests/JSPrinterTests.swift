@@ -149,6 +149,18 @@ struct JSPrinterTests {
         #expect(formatted.contains("\"status\": \"active\""))
     }
 
+    @Test("Format functions with TypeScript annotations")
+    func testFunctionTypeAnnotations() throws {
+        let input = """
+        function calculate(total: number, factor: number = 1, ...extra: any[]): number {
+            return total * factor;
+        }
+        """
+        let formatted = try formatJS(input)
+        #expect(formatted.contains("calculate"))
+        #expect(formatted.contains("total:number"))
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()

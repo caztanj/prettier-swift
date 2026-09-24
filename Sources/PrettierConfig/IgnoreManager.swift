@@ -94,7 +94,10 @@ public struct IgnoreManager: Sendable {
         "**/.next",
         "**/.nuxt",
         "**/.cache",
-        "**/coverage"
+        "**/coverage",
+        "**/package-lock.json",
+        "**/pnpm-lock.yaml",
+        "**/yarn.lock"
     ]
 
     public init(patterns: [String] = [], rootPath: String = FileManager.default.currentDirectoryPath) {

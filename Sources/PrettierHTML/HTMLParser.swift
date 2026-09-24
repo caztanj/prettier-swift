@@ -50,6 +50,7 @@ private struct HTMLParserImpl {
         while index < source.endIndex {
             skipWhitespace()
             guard index < source.endIndex else { break }
+            let before = index
 
             if source[index...].hasPrefix("</") {
                 if parentTag != nil {
@@ -58,6 +59,9 @@ private struct HTMLParserImpl {
                     if let closeEnd = source[index...].firstIndex(of: ">") {
                         index = source.index(after: closeEnd)
                         continue
+                    } else {
+                        index = source.endIndex
+                        break
                     }
                 }
             }
@@ -80,6 +84,9 @@ private struct HTMLParserImpl {
                     let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
                     nodes.append(HTMLDoctype(value: doctypeContent, range: startUtf8..<endUtf8))
                     continue
+                } else {
+                    index = source.endIndex
+                    break
                 }
             }
 
@@ -100,6 +107,10 @@ private struct HTMLParserImpl {
                 let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
                 nodes.append(HTMLText(value: text, range: startUtf8..<endUtf8))
             }
+
+            if index == before && index < source.endIndex {
+                index = source.index(after: index)
+            }
         }
 
         return nodes
@@ -118,6 +129,7 @@ private struct HTMLParserImpl {
         while index < source.endIndex {
             skipWhitespace()
             guard index < source.endIndex else { break }
+            let before = index
 
             if source[index] == ">" || source[index...].hasPrefix("/>") {
                 break
@@ -142,6 +154,10 @@ private struct HTMLParserImpl {
 
             let attrEndUtf8 = source.utf8.distance(from: source.startIndex, to: index)
             attributes.append(HTMLAttribute(name: attrName, value: attrVal, range: attrStartUtf8..<attrEndUtf8))
+
+            if index == before && index < source.endIndex {
+                index = source.index(after: index)
+            }
         }
 
         skipWhitespace()

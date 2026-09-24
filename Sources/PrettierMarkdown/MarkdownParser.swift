@@ -23,6 +23,7 @@ private struct MarkdownParserImpl {
         var lineIndex = 0
 
         while lineIndex < lines.count {
+            let before = lineIndex
             let line = lines[lineIndex]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
@@ -40,7 +41,7 @@ private struct MarkdownParserImpl {
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 let (codeBlock, nextIndex) = parseFencedCodeBlock(lines: lines, startIndex: lineIndex)
                 blocks.append(codeBlock)
-                lineIndex = nextIndex
+                lineIndex = max(before + 1, nextIndex)
                 continue
             }
 
@@ -53,34 +54,34 @@ private struct MarkdownParserImpl {
             if isTableStart(lines: lines, currentIndex: lineIndex) {
                 let (table, nextIndex) = parseTable(lines: lines, startIndex: lineIndex)
                 blocks.append(table)
-                lineIndex = nextIndex
+                lineIndex = max(before + 1, nextIndex)
                 continue
             }
 
             if trimmed.hasPrefix(">") {
                 let (blockquote, nextIndex) = parseBlockquote(lines: lines, startIndex: lineIndex)
                 blocks.append(blockquote)
-                lineIndex = nextIndex
+                lineIndex = max(before + 1, nextIndex)
                 continue
             }
 
             if isListStart(trimmed) {
                 let (list, nextIndex) = parseList(lines: lines, startIndex: lineIndex)
                 blocks.append(list)
-                lineIndex = nextIndex
+                lineIndex = max(before + 1, nextIndex)
                 continue
             }
 
             if trimmed.hasPrefix("<!--") {
                 let (htmlBlock, nextIndex) = parseHTMLCommentBlock(lines: lines, startIndex: lineIndex)
                 blocks.append(htmlBlock)
-                lineIndex = nextIndex
+                lineIndex = max(before + 1, nextIndex)
                 continue
             }
 
             let (paraOrHeading, nextIndex) = parseParagraphOrSetext(lines: lines, startIndex: lineIndex)
             blocks.append(paraOrHeading)
-            lineIndex = nextIndex
+            lineIndex = max(before + 1, nextIndex)
         }
 
         let doc = MarkdownDocument(children: blocks, range: 0..<source.utf8.count)
