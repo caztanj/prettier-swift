@@ -94,6 +94,27 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+    @Test("Format default, combined, namespace, and type imports")
+    func testDefaultAndCombinedImports() throws {
+        let input = """
+        import React from "react";
+        import Component, { useState } from "react";
+        import * as Path from "path";
+        import type { FC } from "react";
+        import "./styles.css";
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        import React from "react";
+        import Component, { useState } from "react";
+        import * as Path from "path";
+        import type { FC } from "react";
+        import "./styles.css";
+
+        """
+        #expect(formatted == expected)
+    }
+
     @Test("Format with singleQuote option")
     func testSingleQuoteOption() throws {
         let input = """

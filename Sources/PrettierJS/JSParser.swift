@@ -251,16 +251,80 @@ private struct JSParserImpl {
         if matchKeyword("import") {
             _ = scanWord()
             skipWhitespaceAndComments()
+
+            var isTypeOnly = false
+            if matchKeyword("type") {
+                let saved = index
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                if index < source.endIndex && (source[index] == "{" || source[index] == "*" || (source[index].isLetter && !matchKeyword("from"))) {
+                    isTypeOnly = true
+                } else {
+                    index = saved
+                }
+            }
+
+            var defaultSpecifier: JSIdentifier? = nil
+            var namespaceSpecifier: JSIdentifier? = nil
             var specifiers: [JSImportSpecifier] = []
+
+            if index < source.endIndex && (source[index] == "\"" || source[index] == "'") {
+                let sourceLit = parseStringLiteral()
+                consumeSemicolon()
+                let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                return JSImportDeclaration(specifiers: [], source: sourceLit, isTypeOnly: isTypeOnly, range: startUtf8..<endUtf8)
+            }
+
+            if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                let name = scanWord()
+                defaultSpecifier = JSIdentifier(name: name)
+                skipWhitespaceAndComments()
+                if index < source.endIndex && source[index] == "," {
+                    index = source.index(after: index)
+                    skipWhitespaceAndComments()
+                }
+            } else if index < source.endIndex && source[index] == "*" {
+                index = source.index(after: index)
+                skipWhitespaceAndComments()
+                if matchKeyword("as") {
+                    _ = scanWord()
+                    skipWhitespaceAndComments()
+                }
+                let name = scanWord()
+                namespaceSpecifier = JSIdentifier(name: name)
+                skipWhitespaceAndComments()
+            }
+
             if index < source.endIndex && source[index] == "{" {
                 index = source.index(after: index)
                 while index < source.endIndex && source[index] != "}" {
                     skipWhitespaceAndComments()
                     if source[index] == "}" { break }
                     let before = index
-                    let name = scanWord()
-                    let id = JSIdentifier(name: name)
-                    specifiers.append(JSImportSpecifier(imported: id, local: id))
+                    var isSpecType = false
+                    if matchKeyword("type") {
+                        let saved = index
+                        _ = scanWord()
+                        skipWhitespaceAndComments()
+                        if index < source.endIndex && source[index] != "," && source[index] != "}" && !matchKeyword("as") {
+                            isSpecType = true
+                        } else {
+                            index = saved
+                        }
+                    }
+                    let importedName = scanWord()
+                    var localName = importedName
+                    skipWhitespaceAndComments()
+                    if matchKeyword("as") {
+                        _ = scanWord()
+                        skipWhitespaceAndComments()
+                        localName = scanWord()
+                    }
+                    specifiers.append(JSImportSpecifier(
+                        imported: JSIdentifier(name: importedName),
+                        local: JSIdentifier(name: localName),
+                        isType: isSpecType
+                    ))
                     skipWhitespaceAndComments()
                     if index < source.endIndex && source[index] == "," {
                         index = source.index(after: index)
@@ -273,6 +337,7 @@ private struct JSParserImpl {
                     index = source.index(after: index)
                 }
             }
+
             skipWhitespaceAndComments()
             if matchKeyword("from") {
                 _ = scanWord()
@@ -281,7 +346,14 @@ private struct JSParserImpl {
             let sourceLit = parseStringLiteral()
             consumeSemicolon()
             let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
-            return JSImportDeclaration(specifiers: specifiers, source: sourceLit, range: startUtf8..<endUtf8)
+            return JSImportDeclaration(
+                defaultSpecifier: defaultSpecifier,
+                namespaceSpecifier: namespaceSpecifier,
+                specifiers: specifiers,
+                source: sourceLit,
+                isTypeOnly: isTypeOnly,
+                range: startUtf8..<endUtf8
+            )
         }
 
         if matchKeyword("export") {

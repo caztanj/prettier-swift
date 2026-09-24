@@ -189,15 +189,46 @@ public func printJSNode(
         innerDoc = .text("`\(tmpl.quasis.joined(separator: ""))`")
 
     case let imp as JSImportDeclaration:
-        let specDocs = imp.specifiers.map { Doc.text($0.imported.name) }
-        let specGroup = join(separator: .text(", "), specDocs)
+        var parts: [Doc] = [.text("import ")]
+        if imp.isTypeOnly {
+            parts.append(.text("type "))
+        }
+
+        var clauses: [Doc] = []
+        if let def = imp.defaultSpecifier {
+            clauses.append(.text(def.name))
+        }
+        if let ns = imp.namespaceSpecifier {
+            clauses.append(.text("* as " + ns.name))
+        }
+        if !imp.specifiers.isEmpty {
+            let specDocs: [Doc] = imp.specifiers.map { spec in
+                var s = spec.isType ? "type " : ""
+                if spec.imported.name == spec.local.name {
+                    s += spec.imported.name
+                } else {
+                    s += spec.imported.name + " as " + spec.local.name
+                }
+                return .text(s)
+            }
+            let specGroup = join(separator: .text(", "), specDocs)
+            if options.bracketSpacing {
+                clauses.append(.concat([.text("{ "), .concat(specGroup), .text(" }")]))
+            } else {
+                clauses.append(.concat([.text("{"), .concat(specGroup), .text("}")]))
+            }
+        }
+
         let sourceDoc = printJSNode(imp.source, options: options, sourceText: sourceText)
         let semiDoc: Doc = options.semi ? .text(";") : .empty
-        if options.bracketSpacing {
-            innerDoc = .concat([.text("import { "), .concat(specGroup), .text(" } from "), sourceDoc, semiDoc])
+
+        if clauses.isEmpty {
+            parts.append(.concat([sourceDoc, semiDoc]))
         } else {
-            innerDoc = .concat([.text("import {"), .concat(specGroup), .text("} from "), sourceDoc, semiDoc])
+            let clauseDoc = join(separator: .text(", "), clauses)
+            parts.append(.concat([.concat(clauseDoc), .text(" from "), sourceDoc, semiDoc]))
         }
+        innerDoc = .concat(parts)
 
     case let expNamed as JSExportNamedDeclaration:
         if let decl = expNamed.declaration {

@@ -303,27 +303,47 @@ public final class JSTemplateLiteral: JSNode, @unchecked Sendable {
 }
 
 public final class JSImportDeclaration: JSNode, @unchecked Sendable {
+    public var defaultSpecifier: JSIdentifier?
+    public var namespaceSpecifier: JSIdentifier?
     public var specifiers: [JSImportSpecifier]
     public var source: JSLiteral
+    public var isTypeOnly: Bool
 
-    public init(specifiers: [JSImportSpecifier], source: JSLiteral, range: Range<Int> = 0..<0) {
+    public init(
+        defaultSpecifier: JSIdentifier? = nil,
+        namespaceSpecifier: JSIdentifier? = nil,
+        specifiers: [JSImportSpecifier] = [],
+        source: JSLiteral,
+        isTypeOnly: Bool = false,
+        range: Range<Int> = 0..<0
+    ) {
+        self.defaultSpecifier = defaultSpecifier
+        self.namespaceSpecifier = namespaceSpecifier
         self.specifiers = specifiers
         self.source = source
+        self.isTypeOnly = isTypeOnly
         super.init(sourceRange: range)
     }
 
     public override var childNodes: [any CommentAttachable] {
-        specifiers + [source]
+        var list: [any CommentAttachable] = []
+        if let def = defaultSpecifier { list.append(def) }
+        if let ns = namespaceSpecifier { list.append(ns) }
+        list.append(contentsOf: specifiers)
+        list.append(source)
+        return list
     }
 }
 
 public final class JSImportSpecifier: JSNode, @unchecked Sendable {
     public var imported: JSIdentifier
     public var local: JSIdentifier
+    public var isType: Bool
 
-    public init(imported: JSIdentifier, local: JSIdentifier, range: Range<Int> = 0..<0) {
+    public init(imported: JSIdentifier, local: JSIdentifier, isType: Bool = false, range: Range<Int> = 0..<0) {
         self.imported = imported
         self.local = local
+        self.isType = isType
         super.init(sourceRange: range)
     }
 
