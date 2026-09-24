@@ -167,6 +167,10 @@ func run() -> Int32 {
     }
 
     if config.files.isEmpty {
+        if isatty(STDIN_FILENO) != 0 {
+            printUsage()
+            return 0
+        }
         let data = FileHandle.standardInput.readDataToEndOfFile()
         guard let inputString = String(data: data, encoding: .utf8) else {
             fputs("Error: Could not decode stdin as UTF-8\n", stderr)

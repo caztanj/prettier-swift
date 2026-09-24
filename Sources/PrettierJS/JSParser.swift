@@ -139,6 +139,7 @@ private struct JSParserImpl {
             var declarators: [JSVariableDeclarator] = []
             while true {
                 skipWhitespaceAndComments()
+                let before = index
                 let id = scanWord()
                 let idNode = JSIdentifier(name: id)
                 skipWhitespaceAndComments()
@@ -154,6 +155,9 @@ private struct JSParserImpl {
                     index = source.index(after: index)
                 } else {
                     break
+                }
+                if index == before {
+                    if index < source.endIndex { index = source.index(after: index) } else { break }
                 }
             }
             consumeSemicolon()
@@ -232,11 +236,15 @@ private struct JSParserImpl {
                 while index < source.endIndex && source[index] != "}" {
                     skipWhitespaceAndComments()
                     if source[index] == "}" { break }
+                    let before = index
                     let name = scanWord()
                     let id = JSIdentifier(name: name)
                     specifiers.append(JSImportSpecifier(imported: id, local: id))
                     skipWhitespaceAndComments()
                     if index < source.endIndex && source[index] == "," {
+                        index = source.index(after: index)
+                    }
+                    if index == before && index < source.endIndex {
                         index = source.index(after: index)
                     }
                 }
@@ -470,19 +478,55 @@ private struct JSParserImpl {
             while index < source.endIndex && source[index] != "}" {
                 skipWhitespaceAndComments()
                 if source[index] == "}" { break }
-                let keyName = scanWord()
-                let keyNode = JSIdentifier(name: keyName)
-                skipWhitespaceAndComments()
-                if index < source.endIndex && source[index] == ":" {
-                    index = source.index(after: index)
+                let before = index
+
+                if source[index...].hasPrefix("...") {
+                    index = source.index(index, offsetBy: 3)
                     skipWhitespaceAndComments()
-                    let valNode = try parseExpression()
-                    props.append(JSProperty(key: keyNode, value: valNode, shorthand: false))
+                    let spreadExpr = try parseExpression()
+                    props.append(JSProperty(key: JSIdentifier(name: "..."), value: spreadExpr, shorthand: true))
                 } else {
-                    props.append(JSProperty(key: keyNode, value: keyNode, shorthand: true))
+                    let keyNode: JSNode
+                    if source[index] == "\"" || source[index] == "'" {
+                        keyNode = parseStringLiteral()
+                    } else if source[index] == "[" {
+                        index = source.index(after: index)
+                        skipWhitespaceAndComments()
+                        let computed = try parseExpression()
+                        skipWhitespaceAndComments()
+                        if index < source.endIndex && source[index] == "]" {
+                            index = source.index(after: index)
+                        }
+                        keyNode = computed
+                    } else if source[index].isNumber {
+                        let start = index
+                        while index < source.endIndex && (source[index].isNumber || source[index] == ".") {
+                            index = source.index(after: index)
+                        }
+                        let numStr = String(source[start..<index])
+                        keyNode = JSLiteral(value: numStr, raw: numStr, isString: false)
+                    } else {
+                        let keyName = scanWord()
+                        keyNode = JSIdentifier(name: keyName)
+                    }
+
+                    skipWhitespaceAndComments()
+                    if index < source.endIndex && source[index] == ":" {
+                        index = source.index(after: index)
+                        skipWhitespaceAndComments()
+                        let valNode = try parseExpression()
+                        props.append(JSProperty(key: keyNode, value: valNode, shorthand: false))
+                    } else {
+                        props.append(JSProperty(key: keyNode, value: keyNode, shorthand: true))
+                    }
                 }
+
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "," {
+                    index = source.index(after: index)
+                }
+
+                if index == before && index < source.endIndex {
                     index = source.index(after: index)
                 }
             }
@@ -498,9 +542,13 @@ private struct JSParserImpl {
             while index < source.endIndex && source[index] != "]" {
                 skipWhitespaceAndComments()
                 if source[index] == "]" { break }
+                let before = index
                 elements.append(try parseExpression())
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "," {
+                    index = source.index(after: index)
+                }
+                if index == before && index < source.endIndex {
                     index = source.index(after: index)
                 }
             }
@@ -529,9 +577,13 @@ private struct JSParserImpl {
             while index < source.endIndex && source[index] != ")" {
                 skipWhitespaceAndComments()
                 if source[index] == ")" { break }
+                let before = index
                 exprs.append(try parseExpression())
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "," {
+                    index = source.index(after: index)
+                }
+                if index == before && index < source.endIndex {
                     index = source.index(after: index)
                 }
             }
@@ -549,6 +601,11 @@ private struct JSParserImpl {
         }
 
         let word = scanWord()
+        if word.isEmpty && index < source.endIndex {
+            let fallbackChar = String(source[index])
+            index = source.index(after: index)
+            return JSIdentifier(name: fallbackChar)
+        }
         skipWhitespaceAndComments()
         if index < source.endIndex && source[index...].hasPrefix("=>") {
             index = source.index(index, offsetBy: 2)

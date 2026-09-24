@@ -138,12 +138,18 @@ private struct CSSParserImpl {
                         let decl = parseDeclaration(prefix, startUtf8: startUtf8)
                         nodes.append(decl)
                     }
-                    if delimiter == ";" {
-                        index = source.index(after: index)
+                    if delimiter == ";" || (isTopLevel && delimiter == "}") {
+                        if index < source.endIndex {
+                            index = source.index(after: index)
+                        }
                     }
                 } else {
                     break
                 }
+            }
+
+            if index == startIdx && index < source.endIndex {
+                index = source.index(after: index)
             }
         }
 

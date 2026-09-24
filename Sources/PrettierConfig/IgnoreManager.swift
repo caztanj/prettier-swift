@@ -88,7 +88,13 @@ public struct IgnoreManager: Sendable {
         "**/.svn",
         "**/.hg",
         "**/node_modules",
-        "**/.build"
+        "**/.build",
+        "**/dist",
+        "**/build",
+        "**/.next",
+        "**/.nuxt",
+        "**/.cache",
+        "**/coverage"
     ]
 
     public init(patterns: [String] = [], rootPath: String = FileManager.default.currentDirectoryPath) {

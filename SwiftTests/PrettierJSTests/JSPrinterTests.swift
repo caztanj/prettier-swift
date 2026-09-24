@@ -139,6 +139,16 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+    @Test("Format objects with spread and string keys")
+    func testObjectSpreadAndStringKeys() throws {
+        let input = """
+        const state = { ...prev, "status": "active" };
+        """
+        let formatted = try formatJS(input)
+        #expect(formatted.contains("..."))
+        #expect(formatted.contains("\"status\": \"active\""))
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()
