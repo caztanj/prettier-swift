@@ -280,12 +280,15 @@ private struct JSParserImpl {
             }
             skipWhitespaceAndComments()
             let consequent = try parseStatement() ?? JSBlockStatement(body: [])
+            let savedIndex = index
             skipWhitespaceAndComments()
             var alternate: JSNode? = nil
             if matchKeyword("else") {
                 _ = scanWord()
                 skipWhitespaceAndComments()
                 alternate = try parseStatement()
+            } else {
+                index = savedIndex
             }
             let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
             return JSIfStatement(test: testExpr, consequent: consequent, alternate: alternate, range: startUtf8..<endUtf8)
@@ -687,6 +690,7 @@ private struct JSParserImpl {
             _ = scanWord()
             skipWhitespaceAndComments()
             let block = try parseBlockStatement()
+            let afterBlockIndex = index
             skipWhitespaceAndComments()
             var handlerParam: String? = nil
             var handler: JSBlockStatement? = nil
@@ -707,13 +711,18 @@ private struct JSParserImpl {
                     skipWhitespaceAndComments()
                 }
                 handler = try parseBlockStatement()
-                skipWhitespaceAndComments()
+            } else {
+                index = afterBlockIndex
             }
+            let afterCatchIndex = index
+            skipWhitespaceAndComments()
             var finalizer: JSBlockStatement? = nil
             if matchKeyword("finally") {
                 _ = scanWord()
                 skipWhitespaceAndComments()
                 finalizer = try parseBlockStatement()
+            } else {
+                index = afterCatchIndex
             }
             let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
             return JSTryStatement(block: block, handlerParam: handlerParam, handler: handler, finalizer: finalizer, range: startUtf8..<endUtf8)

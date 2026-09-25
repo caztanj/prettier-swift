@@ -236,6 +236,54 @@ struct JSPrinterTests {
         """)
     }
 
+    @Test("Preserve blank lines after if statements and try-catch blocks")
+    func testPreserveBlankLinesAfterIfAndTryCatch() throws {
+        let input = """
+        function test(x) {
+            if (x > 0) {
+                console.log("positive");
+            }
+
+            if (x < 0) {
+                console.log("negative");
+            } else if (x === 0) {
+                console.log("zero");
+            }
+
+            try {
+                risky();
+            } catch (err) {
+                handle(err);
+            }
+
+            return x;
+        }
+        """
+        let formatted = try formatJS(input)
+        #expect(formatted == """
+        function test(x) {
+          if (x > 0) {
+            console.log("positive");
+          }
+
+          if (x < 0) {
+            console.log("negative");
+          } else if (x === 0) {
+            console.log("zero");
+          }
+
+          try {
+            risky();
+          } catch (err) {
+            handle(err);
+          }
+
+          return x;
+        }
+
+        """)
+    }
+
     @Test("Format export statements")
     func testExportStatements() throws {
         let input = """
