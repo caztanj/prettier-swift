@@ -1,6 +1,12 @@
 #!/usr/bin/env swift
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 let fileManager = FileManager.default
 let currentDir = URL(fileURLWithPath: fileManager.currentDirectoryPath)
@@ -11,13 +17,32 @@ if fileManager.fileExists(atPath: currentDir.appendingPathComponent("Package.swi
     repoRoot = currentDir.deletingLastPathComponent()
 }
 
-let possiblePaths = [
-    repoRoot.appendingPathComponent(".build/out/Products/Release/prettier-swift").path,
-    repoRoot.appendingPathComponent(".build/release/prettier-swift").path,
-    repoRoot.appendingPathComponent(".build/arm64-apple-macosx/release/prettier-swift").path
-]
+func findSwiftBin() -> String? {
+    let possiblePaths = [
+        repoRoot.appendingPathComponent(".build/out/Products/Release-linux-x86_64/prettier-swift").path,
+        repoRoot.appendingPathComponent(".build/out/Products/Release/prettier-swift").path,
+        repoRoot.appendingPathComponent(".build/release/prettier-swift").path,
+        repoRoot.appendingPathComponent(".build/arm64-apple-macosx/release/prettier-swift").path,
+        repoRoot.appendingPathComponent(".build/x86_64-apple-macosx/release/prettier-swift").path,
+        repoRoot.appendingPathComponent(".build/x86_64-unknown-linux-gnu/release/prettier-swift").path
+    ]
+    if let found = possiblePaths.first(where: { fileManager.isExecutableFile(atPath: $0) }) {
+        return found
+    }
+    let buildDir = repoRoot.appendingPathComponent(".build")
+    if let enumerator = fileManager.enumerator(at: buildDir, includingPropertiesForKeys: [.isExecutableKey]) {
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == "prettier-swift" &&
+               url.path.lowercased().contains("release") &&
+               fileManager.isExecutableFile(atPath: url.path) {
+                return url.path
+            }
+        }
+    }
+    return nil
+}
 
-var swiftBin = possiblePaths.first { fileManager.isExecutableFile(atPath: $0) }
+var swiftBin = findSwiftBin()
 
 if swiftBin == nil {
     print("Building prettier-swift release binary...")
@@ -28,7 +53,7 @@ if swiftBin == nil {
     try buildProcess.run()
     buildProcess.waitUntilExit()
 
-    swiftBin = possiblePaths.first { fileManager.isExecutableFile(atPath: $0) }
+    swiftBin = findSwiftBin()
 }
 
 guard let swiftBinPath = swiftBin else {
@@ -107,7 +132,11 @@ func measureBenchmark(prog: String, args: [String], iterations: Int) -> Double {
     for _ in 0..<iterations {
         var pid: pid_t = 0
         var cArgs = ([prog] + args).map { strdup($0) } + [nil]
+        #if canImport(Darwin)
         var fileActions: posix_spawn_file_actions_t?
+        #else
+        var fileActions = posix_spawn_file_actions_t()
+        #endif
         posix_spawn_file_actions_init(&fileActions)
         posix_spawn_file_actions_addopen(&fileActions, 1, "/dev/null", O_WRONLY, 0)
         posix_spawn_file_actions_addopen(&fileActions, 2, "/dev/null", O_WRONLY, 0)

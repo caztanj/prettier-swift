@@ -1,16 +1,13 @@
-import os
+import Synchronization
 
 public struct GroupId: Hashable, Sendable, CustomStringConvertible {
-    private static let counter = OSAllocatedUnfairLock(initialState: UInt(0))
+    private static let counter = Atomic<UInt>(0)
 
     public let id: UInt
     public let name: String?
 
     public init(name: String? = nil) {
-        self.id = Self.counter.withLock { count in
-            count &+= 1
-            return count
-        }
+        self.id = Self.counter.wrappingAdd(1, ordering: .relaxed).newValue
         self.name = name
     }
 

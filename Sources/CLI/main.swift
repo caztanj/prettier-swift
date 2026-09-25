@@ -1,6 +1,12 @@
 import Foundation
 import Dispatch
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Prettier
 
 Prettier.initializeDefaultPlugins()
@@ -43,6 +49,10 @@ func printUsage() {
       -h, --help               Show CLI usage, or details about the given flag.
       -v, --version            Print prettier-swift version.
     """)
+}
+
+func writeToStderr(_ message: String) {
+    FileHandle.standardError.write(Data(message.utf8))
 }
 
 func run() -> Int32 {
@@ -103,7 +113,7 @@ func run() -> Int32 {
             }
         default:
             if arg.hasPrefix("-") {
-                fputs("Unknown option: \(arg)\n", stderr)
+                writeToStderr("Unknown option: \(arg)\n")
                 printUsage()
                 return 1
             }
@@ -174,7 +184,7 @@ func run() -> Int32 {
         }
         let data = FileHandle.standardInput.readDataToEndOfFile()
         guard let inputString = String(data: data, encoding: .utf8) else {
-            fputs("Error: Could not decode stdin as UTF-8\n", stderr)
+            writeToStderr("Error: Could not decode stdin as UTF-8\n")
             return 1
         }
         let effectiveOptions = resolveEffectiveOptions(for: config.stdinFilePath)
@@ -188,7 +198,7 @@ func run() -> Int32 {
             print(formatted, terminator: "")
             return 0
         } catch {
-            fputs("\(error)\n", stderr)
+            writeToStderr("\(error)\n")
             return 1
         }
     }
@@ -292,7 +302,7 @@ func run() -> Int32 {
     var hasUnformatted = false
     for res in collector.results.compactMap({ $0 }) {
         if let err = res.error {
-            fputs("Error processing \(res.filePath): \(err)\n", stderr)
+            writeToStderr("Error processing \(res.filePath): \(err)\n")
             hasUnformatted = true
             continue
         }

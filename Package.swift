@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Prettier",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v15)
     ],
     products: [
         .executable(name: "prettier-swift", targets: ["prettier-swift"]),
