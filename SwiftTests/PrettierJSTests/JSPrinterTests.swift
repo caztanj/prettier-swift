@@ -432,6 +432,21 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+    @Test("Wrap long function calls and type arguments exceeding printWidth")
+    func testLongCallAndTypeArgumentsWrapping() throws {
+        let input = """
+        const isPending = useSelector<ReduxStore, boolean>((state) => state.someDeeplyNestedProperty.isPending);
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const isPending = useSelector<ReduxStore, boolean>(
+          (state) => state.someDeeplyNestedProperty.isPending
+        );
+
+        """
+        #expect(formatted == expected)
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()

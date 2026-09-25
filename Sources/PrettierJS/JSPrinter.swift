@@ -150,13 +150,24 @@ public func printJSNode(
         let calleeDoc = printJSNode(call.callee, options: options, sourceText: sourceText)
         let typeArgsDoc: Doc
         if let typeArgs = call.typeArguments, !typeArgs.isEmpty {
-            typeArgsDoc = .text(typeArgs)
+            typeArgsDoc = printTypeArgumentsDoc(typeArgs)
         } else {
             typeArgsDoc = .empty
         }
-        let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
-        let argsGroup = join(separator: .text(", "), argDocs)
-        innerDoc = .concat([calleeDoc, typeArgsDoc, .text("("), .concat(argsGroup), .text(")")])
+        if call.arguments.isEmpty {
+            innerDoc = .concat([calleeDoc, typeArgsDoc, .text("()")])
+        } else {
+            let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
+            let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
+            innerDoc = group(.concat([
+                calleeDoc,
+                typeArgsDoc,
+                .text("("),
+                .indent(.concat([.softline, .concat(argsBody)])),
+                .softline,
+                .text(")")
+            ]))
+        }
 
     case let member as JSMemberExpression:
         let objDoc = printJSNode(member.object, options: options, sourceText: sourceText)
@@ -180,12 +191,14 @@ public func printJSNode(
                     return .concat([keyDoc, .text(": "), valDoc])
                 }
             }
-            let joined = join(separator: .text(", "), propDocs)
-            if options.bracketSpacing {
-                innerDoc = .concat([.text("{ "), .concat(joined), .text(" }")])
-            } else {
-                innerDoc = .concat([.text("{"), .concat(joined), .text("}")])
-            }
+            let joined = join(separator: .concat([.text(","), .line]), propDocs)
+            let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
+            innerDoc = group(.concat([
+                .text("{"),
+                .indent(.concat([lineDoc, .concat(joined)])),
+                lineDoc,
+                .text("}")
+            ]))
         }
 
     case let arr as JSArrayExpression:
@@ -193,8 +206,13 @@ public func printJSNode(
             innerDoc = .text("[]")
         } else {
             let elemDocs = arr.elements.map { printJSNode($0, options: options, sourceText: sourceText) }
-            let joined = join(separator: .text(", "), elemDocs)
-            innerDoc = .concat([.text("["), .concat(joined), .text("]")])
+            let joined = join(separator: .concat([.text(","), .line]), elemDocs)
+            innerDoc = group(.concat([
+                .text("["),
+                .indent(.concat([.softline, .concat(joined)])),
+                .softline,
+                .text("]")
+            ]))
         }
 
     case let id as JSIdentifier:
@@ -354,13 +372,25 @@ public func printJSNode(
         let calleeDoc = printJSNode(newExpr.callee, options: options, sourceText: sourceText)
         let typeArgsDoc: Doc
         if let typeArgs = newExpr.typeArguments, !typeArgs.isEmpty {
-            typeArgsDoc = .text(typeArgs)
+            typeArgsDoc = printTypeArgumentsDoc(typeArgs)
         } else {
             typeArgsDoc = .empty
         }
-        let argDocs = newExpr.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
-        let argsGroup = join(separator: .text(", "), argDocs)
-        innerDoc = .concat([.text("new "), calleeDoc, typeArgsDoc, .text("("), .concat(argsGroup), .text(")")])
+        if newExpr.arguments.isEmpty {
+            innerDoc = .concat([.text("new "), calleeDoc, typeArgsDoc, .text("()")])
+        } else {
+            let argDocs = newExpr.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
+            let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
+            innerDoc = group(.concat([
+                .text("new "),
+                calleeDoc,
+                typeArgsDoc,
+                .text("("),
+                .indent(.concat([.softline, .concat(argsBody)])),
+                .softline,
+                .text(")")
+            ]))
+        }
 
 
     case let awaitExpr as JSAwaitExpression:
@@ -480,4 +510,67 @@ private func printStatementSequence(
     }
 
     return docs
+}
+
+private func printTypeArgumentsDoc(_ typeArgs: String) -> Doc {
+    guard typeArgs.hasPrefix("<") && typeArgs.hasSuffix(">") else {
+        return .text(typeArgs)
+    }
+    let inner = typeArgs.dropFirst().dropLast()
+    let parts = splitTypeArguments(String(inner))
+    guard parts.count > 1 else {
+        return .text(typeArgs)
+    }
+    let typeDocs = parts.map { Doc.text($0) }
+    let typeBody = join(separator: .concat([.text(","), .line]), typeDocs)
+    return group(.concat([
+        .text("<"),
+        .indent(.concat([.softline, .concat(typeBody)])),
+        .softline,
+        .text(">")
+    ]))
+}
+
+private func splitTypeArguments(_ inner: String) -> [String] {
+    var parts: [String] = []
+    var start = inner.startIndex
+    var i = inner.startIndex
+    var parenDepth = 0
+    var braceDepth = 0
+    var bracketDepth = 0
+    var angleDepth = 0
+    var inString: Character? = nil
+
+    while i < inner.endIndex {
+        let ch = inner[i]
+        if let quote = inString {
+            if ch == "\\" {
+                i = inner.index(after: i)
+                if i < inner.endIndex { i = inner.index(after: i) }
+                continue
+            } else if ch == quote {
+                inString = nil
+            }
+        } else {
+            if ch == "\"" || ch == "'" || ch == "`" {
+                inString = ch
+            } else if ch == "(" { parenDepth += 1 }
+            else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if ch == "{" { braceDepth += 1 }
+            else if ch == "}" { braceDepth = max(0, braceDepth - 1) }
+            else if ch == "[" { bracketDepth += 1 }
+            else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+            else if ch == "<" { angleDepth += 1 }
+            else if ch == ">" { angleDepth = max(0, angleDepth - 1) }
+            else if ch == "," && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && angleDepth == 0 {
+                let part = String(inner[start..<i]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !part.isEmpty { parts.append(part) }
+                start = inner.index(after: i)
+            }
+        }
+        i = inner.index(after: i)
+    }
+    let last = String(inner[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    if !last.isEmpty { parts.append(last) }
+    return parts
 }
