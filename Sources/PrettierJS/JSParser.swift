@@ -1221,7 +1221,7 @@ private struct JSParserImpl {
             skipWhitespaceAndComments()
             let target = try parsePostfix()
             if let call = target as? JSCallExpression {
-                return JSNewExpression(callee: call.callee, arguments: call.arguments)
+                return JSNewExpression(callee: call.callee, arguments: call.arguments, typeArguments: call.typeArguments)
             } else {
                 return JSNewExpression(callee: target, arguments: [])
             }
@@ -1269,6 +1269,205 @@ private struct JSParserImpl {
         return try parsePostfix()
     }
 
+    private mutating func parseArgumentList() throws -> [JSNode] {
+        guard index < source.endIndex && source[index] == "(" else { return [] }
+        index = source.index(after: index)
+        var args: [JSNode] = []
+        while index < source.endIndex && source[index] != ")" {
+            skipWhitespaceAndComments()
+            if source[index] == ")" { break }
+            let before = index
+            args.append(try parseExpression())
+            skipWhitespaceAndComments()
+            if index < source.endIndex && source[index] == "," {
+                index = source.index(after: index)
+            }
+            if index == before && index < source.endIndex {
+                index = source.index(after: index)
+            }
+        }
+        if index < source.endIndex && source[index] == ")" {
+            index = source.index(after: index)
+        }
+        return args
+    }
+
+    private mutating func tryScanTypeArguments() -> String? {
+        guard index < source.endIndex && source[index] == "<" else { return nil }
+
+        let nextIdx = source.index(after: index)
+        guard nextIdx < source.endIndex else { return nil }
+        let nextCh = source[nextIdx]
+        guard nextCh != "<" && nextCh != "=" else { return nil }
+
+        var lookIndex = source.index(after: index)
+        var angleDepth = 1
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var inString: Character? = nil
+
+        while lookIndex < source.endIndex && angleDepth > 0 {
+            let ch = source[lookIndex]
+            if let quote = inString {
+                if ch == "\\" {
+                    lookIndex = source.index(after: lookIndex)
+                    if lookIndex < source.endIndex {
+                        lookIndex = source.index(after: lookIndex)
+                    }
+                    continue
+                } else if ch == quote {
+                    inString = nil
+                }
+            } else {
+                if ch == "\"" || ch == "'" || ch == "`" {
+                    inString = ch
+                } else if ch == "/" && source.index(after: lookIndex) < source.endIndex && source[source.index(after: lookIndex)] == "*" {
+                    lookIndex = source.index(lookIndex, offsetBy: 2)
+                    if let endRange = source[lookIndex...].range(of: "*/") {
+                        lookIndex = endRange.upperBound
+                    } else {
+                        return nil
+                    }
+                    continue
+                } else if ch == "/" && source.index(after: lookIndex) < source.endIndex && source[source.index(after: lookIndex)] == "/" {
+                    lookIndex = source.index(lookIndex, offsetBy: 2)
+                    let endIdx = source[lookIndex...].firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? source.endIndex
+                    lookIndex = endIdx
+                    continue
+                } else if ch == "<" {
+                    let n = source.index(after: lookIndex)
+                    if n < source.endIndex && (source[n] == "=" || source[n] == "<") {
+                        return nil
+                    }
+                    angleDepth += 1
+                } else if ch == ">" {
+                    let prev = lookIndex > index ? source[source.index(before: lookIndex)] : nil
+                    let n = source.index(after: lookIndex)
+                    let nextCh = n < source.endIndex ? source[n] : nil
+
+                    if prev == "=" || nextCh == "=" {
+                    } else if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+                        angleDepth -= 1
+                        if angleDepth == 0 {
+                            lookIndex = source.index(after: lookIndex)
+                            break
+                        }
+                    } else {
+                        angleDepth = max(0, angleDepth - 1)
+                    }
+                } else if ch == "(" {
+                    parenDepth += 1
+                } else if ch == ")" {
+                    parenDepth = max(0, parenDepth - 1)
+                } else if ch == "{" {
+                    braceDepth += 1
+                } else if ch == "}" {
+                    braceDepth = max(0, braceDepth - 1)
+                } else if ch == "[" {
+                    bracketDepth += 1
+                } else if ch == "]" {
+                    bracketDepth = max(0, bracketDepth - 1)
+                } else if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+                    if ch == ";" || ch == "!" {
+                        return nil
+                    }
+                    let n = source.index(after: lookIndex)
+                    if n < source.endIndex {
+                        let nextCh = source[n]
+                        if (ch == "&" && nextCh == "&") || (ch == "|" && nextCh == "|") || (ch == "=" && nextCh == "=") {
+                            return nil
+                        }
+                    }
+                }
+            }
+            lookIndex = source.index(after: lookIndex)
+        }
+
+        guard angleDepth == 0 else { return nil }
+
+        var afterIdx = lookIndex
+        while afterIdx < source.endIndex {
+            let ch = source[afterIdx]
+            if ch.isWhitespace || ch == "\n" || ch == "\r" {
+                afterIdx = source.index(after: afterIdx)
+                continue
+            }
+            if ch == "/" && source.index(after: afterIdx) < source.endIndex && source[source.index(after: afterIdx)] == "*" {
+                afterIdx = source.index(afterIdx, offsetBy: 2)
+                if let endRange = source[afterIdx...].range(of: "*/") {
+                    afterIdx = endRange.upperBound
+                } else {
+                    return nil
+                }
+                continue
+            }
+            if ch == "/" && source.index(after: afterIdx) < source.endIndex && source[source.index(after: afterIdx)] == "/" {
+                afterIdx = source.index(afterIdx, offsetBy: 2)
+                let endIdx = source[afterIdx...].firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? source.endIndex
+                afterIdx = endIdx
+                continue
+            }
+            break
+        }
+
+        guard afterIdx < source.endIndex && (source[afterIdx] == "(" || source[afterIdx] == "`") else {
+            return nil
+        }
+
+        let raw = String(source[index..<lookIndex])
+        let formatted = formatTypeArguments(raw)
+        index = lookIndex
+        return formatted
+    }
+
+    private func formatTypeArguments(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("<") && trimmed.hasSuffix(">") else { return trimmed }
+        let inner = trimmed.dropFirst().dropLast()
+        var parts: [String] = []
+        var start = inner.startIndex
+        var i = inner.startIndex
+        var parenDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var angleDepth = 0
+        var inString: Character? = nil
+
+        while i < inner.endIndex {
+            let ch = inner[i]
+            if let quote = inString {
+                if ch == "\\" {
+                    i = inner.index(after: i)
+                    if i < inner.endIndex { i = inner.index(after: i) }
+                    continue
+                } else if ch == quote {
+                    inString = nil
+                }
+            } else {
+                if ch == "\"" || ch == "'" || ch == "`" {
+                    inString = ch
+                } else if ch == "(" { parenDepth += 1 }
+                else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+                else if ch == "{" { braceDepth += 1 }
+                else if ch == "}" { braceDepth = max(0, braceDepth - 1) }
+                else if ch == "[" { bracketDepth += 1 }
+                else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+                else if ch == "<" { angleDepth += 1 }
+                else if ch == ">" { angleDepth = max(0, angleDepth - 1) }
+                else if ch == "," && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && angleDepth == 0 {
+                    let part = String(inner[start..<i]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !part.isEmpty { parts.append(part) }
+                    start = inner.index(after: i)
+                }
+            }
+            i = inner.index(after: i)
+        }
+        let lastPart = String(inner[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !lastPart.isEmpty { parts.append(lastPart) }
+        return "<" + parts.joined(separator: ", ") + ">"
+    }
+
     private mutating func parsePostfix() throws -> JSNode {
         var expr = try parsePrimary()
 
@@ -1282,26 +1481,27 @@ private struct JSParserImpl {
             } else if source[index...].hasPrefix("--") {
                 index = source.index(index, offsetBy: 2)
                 expr = JSUnaryExpression(operatorStr: "--", prefix: false, argument: expr)
+            } else if source[index] == "<" {
+                let saved = index
+                if let typeArgs = tryScanTypeArguments() {
+                    skipWhitespaceAndComments()
+                    if index < source.endIndex && source[index] == "(" {
+                        let args = try parseArgumentList()
+                        let startUtf8 = expr.sourceRange.lowerBound
+                        let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                        expr = JSCallExpression(callee: expr, arguments: args, typeArguments: typeArgs, range: startUtf8..<endUtf8)
+                    } else {
+                        index = saved
+                        break
+                    }
+                } else {
+                    break
+                }
             } else if source[index] == "(" {
-                index = source.index(after: index)
-                var args: [JSNode] = []
-                while index < source.endIndex && source[index] != ")" {
-                    skipWhitespaceAndComments()
-                    if source[index] == ")" { break }
-                    let before = index
-                    args.append(try parseExpression())
-                    skipWhitespaceAndComments()
-                    if index < source.endIndex && source[index] == "," {
-                        index = source.index(after: index)
-                    }
-                    if index == before && index < source.endIndex {
-                        index = source.index(after: index)
-                    }
-                }
-                if index < source.endIndex && source[index] == ")" {
-                    index = source.index(after: index)
-                }
-                expr = JSCallExpression(callee: expr, arguments: args)
+                let args = try parseArgumentList()
+                let startUtf8 = expr.sourceRange.lowerBound
+                let endUtf8 = source.utf8.distance(from: source.startIndex, to: index)
+                expr = JSCallExpression(callee: expr, arguments: args, range: startUtf8..<endUtf8)
             } else if source[index] == "." {
                 index = source.index(after: index)
                 skipWhitespaceAndComments()

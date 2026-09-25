@@ -148,9 +148,15 @@ public func printJSNode(
 
     case let call as JSCallExpression:
         let calleeDoc = printJSNode(call.callee, options: options, sourceText: sourceText)
+        let typeArgsDoc: Doc
+        if let typeArgs = call.typeArguments, !typeArgs.isEmpty {
+            typeArgsDoc = .text(typeArgs)
+        } else {
+            typeArgsDoc = .empty
+        }
         let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
         let argsGroup = join(separator: .text(", "), argDocs)
-        innerDoc = .concat([calleeDoc, .text("("), .concat(argsGroup), .text(")")])
+        innerDoc = .concat([calleeDoc, typeArgsDoc, .text("("), .concat(argsGroup), .text(")")])
 
     case let member as JSMemberExpression:
         let objDoc = printJSNode(member.object, options: options, sourceText: sourceText)
@@ -346,9 +352,15 @@ public func printJSNode(
 
     case let newExpr as JSNewExpression:
         let calleeDoc = printJSNode(newExpr.callee, options: options, sourceText: sourceText)
+        let typeArgsDoc: Doc
+        if let typeArgs = newExpr.typeArguments, !typeArgs.isEmpty {
+            typeArgsDoc = .text(typeArgs)
+        } else {
+            typeArgsDoc = .empty
+        }
         let argDocs = newExpr.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
         let argsGroup = join(separator: .text(", "), argDocs)
-        innerDoc = .concat([.text("new "), calleeDoc, .text("("), .concat(argsGroup), .text(")")])
+        innerDoc = .concat([.text("new "), calleeDoc, typeArgsDoc, .text("("), .concat(argsGroup), .text(")")])
 
 
     case let awaitExpr as JSAwaitExpression:

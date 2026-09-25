@@ -415,6 +415,23 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+    @Test("Format generic function calls and new expressions with type arguments")
+    func testGenericCallAndNewExpressions() throws {
+        let input = """
+        const isPending = useSelector<ReduxStore, boolean>(s => s.pending);
+        const map = new Map<string, number>();
+        const val = func<A, B, C>(1, 2);
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const isPending = useSelector<ReduxStore, boolean>((s) => s.pending);
+        const map = new Map<string, number>();
+        const val = func<A, B, C>(1, 2);
+
+        """
+        #expect(formatted == expected)
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()

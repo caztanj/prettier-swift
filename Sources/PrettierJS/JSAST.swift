@@ -199,10 +199,12 @@ public final class JSUnaryExpression: JSNode, @unchecked Sendable {
 public final class JSCallExpression: JSNode, @unchecked Sendable {
     public var callee: JSNode
     public var arguments: [JSNode]
+    public var typeArguments: String?
 
-    public init(callee: JSNode, arguments: [JSNode], range: Range<Int> = 0..<0) {
+    public init(callee: JSNode, arguments: [JSNode], typeArguments: String? = nil, range: Range<Int> = 0..<0) {
         self.callee = callee
         self.arguments = arguments
+        self.typeArguments = typeArguments
         super.init(sourceRange: range)
     }
 
@@ -545,10 +547,12 @@ public final class JSThrowStatement: JSNode, @unchecked Sendable {
 public final class JSNewExpression: JSNode, @unchecked Sendable {
     public var callee: JSNode
     public var arguments: [JSNode]
+    public var typeArguments: String?
 
-    public init(callee: JSNode, arguments: [JSNode] = [], range: Range<Int> = 0..<0) {
+    public init(callee: JSNode, arguments: [JSNode] = [], typeArguments: String? = nil, range: Range<Int> = 0..<0) {
         self.callee = callee
         self.arguments = arguments
+        self.typeArguments = typeArguments
         super.init(sourceRange: range)
     }
 
