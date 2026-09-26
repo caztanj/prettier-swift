@@ -545,4 +545,11 @@ struct JSPrinterTests {
         """
         #expect(formatted == expected)
     }
+
+    @Test("Ternary with comment before new expression")
+    func testTernaryWithCommentBeforeNew() throws {
+        let input = "lastResult = needsWeakRef ? /* @__PURE__ */ new Ref(result) : result;\n"
+        let formatted = try formatJS(input)
+        #expect(formatted == input)
+    }
 }

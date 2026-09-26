@@ -60,6 +60,30 @@ public final class JSVariableDeclarator: JSNode, @unchecked Sendable {
     }
 }
 
+public final class JSClassDeclaration: JSNode, @unchecked Sendable {
+    public var id: JSIdentifier?
+    public var typeParameters: String?
+    public var superClass: JSNode?
+    public var body: [JSNode]
+
+    public init(id: JSIdentifier?, typeParameters: String? = nil, superClass: JSNode? = nil, body: [JSNode], range: Range<Int> = 0..<0) {
+        self.id = id
+        self.typeParameters = typeParameters
+        self.superClass = superClass
+        self.body = body
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var children: [any CommentAttachable] = []
+        if let id { children.append(id) }
+        if let superClass { children.append(superClass) }
+        children.append(contentsOf: body)
+        return children
+    }
+}
+
+
 public final class JSFunctionDeclaration: JSNode, @unchecked Sendable {
     public var id: JSIdentifier?
     public var typeParameters: String?

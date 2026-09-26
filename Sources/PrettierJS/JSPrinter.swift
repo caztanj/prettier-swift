@@ -35,16 +35,55 @@ public func printJSNode(
             let idDoc = printJSNode(decl.id, options: options, sourceText: sourceText)
             var typeDoc: Doc = .empty
             if let type = decl.typeAnnotation, !type.isEmpty {
-                typeDoc = .text(": \(type)")
+                var cleanType = type
+                if !options.singleQuote && !cleanType.contains("\"") && cleanType.contains("'") {
+                    cleanType = cleanType.replacingOccurrences(of: "'", with: "\"")
+                }
+                typeDoc = .text(": \(cleanType)")
             }
             if let initVal = decl.initValue {
                 let initDoc = printJSNode(initVal, options: options, sourceText: sourceText)
-                if initVal is JSConditionalExpression {
+                let isPureCall: Bool = {
+                    let callNode: JSCallExpression? = {
+                        if let call = initVal as? JSCallExpression { return call }
+                        if let asExpr = initVal as? JSTypeAssertionExpression, let call = asExpr.expression as? JSCallExpression { return call }
+                        return nil
+                    }()
+                    guard let call = callNode, call.sourceRange.lowerBound > 0 else { return false }
+                    let start = max(0, call.sourceRange.lowerBound - 30)
+                    guard start < sourceText.count && call.sourceRange.lowerBound <= sourceText.count else { return false }
+                    let startIdx = sourceText.index(sourceText.startIndex, offsetBy: start)
+                    let endIdx = sourceText.index(sourceText.startIndex, offsetBy: call.sourceRange.lowerBound)
+                    return sourceText[startIdx..<endIdx].contains("__PURE__")
+                }()
+                let shouldHug: Bool
+                if isPureCall {
+                    shouldHug = false
+                } else if initVal is JSObjectExpression || initVal is JSArrayExpression || initVal is JSFunctionDeclaration || initVal is JSTypeAssertionExpression {
+                    shouldHug = true
+                } else if initVal is JSCallExpression {
+                    shouldHug = true
+                } else if let idIdent = decl.id as? JSIdentifier, idIdent.name.contains("\n") {
+                    shouldHug = true
+                } else if initVal is JSArrowFunctionExpression {
+                    shouldHug = true
+                } else if let cond = initVal as? JSConditionalExpression {
+                    if decl.typeAnnotation?.contains("\n") == true {
+                        shouldHug = true
+                    } else if cond.test is JSBinaryExpression {
+                        shouldHug = false
+                    } else {
+                        shouldHug = true
+                    }
+                } else {
+                    shouldHug = false
+                }
+                if shouldHug {
+                    declDocs.append(.concat([idDoc, typeDoc, .text(" = "), initDoc]))
+                } else {
                     let flat = Doc.concat([idDoc, typeDoc, .text(" = "), initDoc])
                     let broken = Doc.concat([idDoc, typeDoc, .text(" ="), .indent(.concat([.line, initDoc]))])
                     declDocs.append(conditionalGroup([flat, broken]))
-                } else {
-                    declDocs.append(.concat([idDoc, typeDoc, .text(" = "), initDoc]))
                 }
             } else {
                 declDocs.append(.concat([idDoc, typeDoc]))
@@ -53,6 +92,35 @@ public func printJSNode(
         let joinedDecls = join(separator: .text(", "), declDocs)
         let semiDoc: Doc = options.semi ? .text(";") : .empty
         innerDoc = .concat([.text("\(varDecl.kind) "), .concat(joinedDecls), semiDoc])
+
+    case let cls as JSClassDeclaration:
+        var parts: [Doc] = [.text("class")]
+        if let id = cls.id {
+            parts.append(.text(" "))
+            parts.append(printJSNode(id, options: options, sourceText: sourceText))
+        }
+        if let typeParams = cls.typeParameters, !typeParams.isEmpty {
+            parts.append(.text(typeParams))
+        }
+        if let superClass = cls.superClass {
+            parts.append(.text(" extends "))
+            parts.append(printJSNode(superClass, options: options, sourceText: sourceText))
+        }
+        parts.append(.text(" {"))
+        if cls.body.isEmpty {
+            parts.append(.text("}"))
+        } else {
+            var bodyDocs: [Doc] = []
+            for member in cls.body {
+                let memberDoc = printJSNode(member, options: options, sourceText: sourceText)
+                bodyDocs.append(memberDoc)
+            }
+            let joinedBody = join(separator: .hardline, bodyDocs)
+            parts.append(.indent(.concat([.hardline, .concat(joinedBody)])))
+            parts.append(.hardline)
+            parts.append(.text("}"))
+        }
+        innerDoc = .concat(parts)
 
     case let fn as JSFunctionDeclaration:
         var prefix = fn.isAsync ? "async function" : "function"
@@ -63,7 +131,7 @@ public func printJSNode(
         }
         let typeParamsDoc: Doc
         if let typeParams = fn.typeParameters, !typeParams.isEmpty {
-            typeParamsDoc = printTypeArgumentsDoc(typeParams)
+            typeParamsDoc = printTypeArgumentsDoc(typeParams, options: options)
         } else {
             typeParamsDoc = .empty
         }
@@ -76,8 +144,6 @@ public func printJSNode(
         let paramsDoc: Doc
         if fn.params.isEmpty {
             paramsDoc = .text("()")
-        } else if fn.params.count == 1, let firstParamStr = (fn.params.first as? JSIdentifier)?.name, firstParamStr.contains("\n") {
-            paramsDoc = .concat([.text("("), .text(firstParamStr), .text(")")])
         } else {
             let joinedMulti = join(separator: .concat([.text(","), .line]), paramDocs)
             let hasRest = fn.params.last.map { ($0 as? JSIdentifier)?.name.hasPrefix("...") ?? false } ?? false
@@ -146,7 +212,17 @@ public func printJSNode(
 
     case let block as JSBlockStatement:
         if block.body.isEmpty {
-            innerDoc = .text("{}")
+            let dangling = CommentPrinter.printDangling(comments: block.comments, indent: true)
+            if dangling == .empty {
+                innerDoc = .text("{}")
+            } else {
+                innerDoc = .concat([
+                    .text("{"),
+                    dangling,
+                    .hardline,
+                    .text("}")
+                ])
+            }
         } else {
             let bodyDocs = printStatementSequence(block.body, options: options, sourceText: sourceText)
             innerDoc = .concat([
@@ -192,17 +268,23 @@ public func printJSNode(
     case let ifStmt as JSIfStatement:
         let testDoc: Doc
         if let bin = ifStmt.test as? JSBinaryExpression {
-            testDoc = printBinaryExpressionFlat(bin, options: options, sourceText: sourceText)
+            testDoc = printBinaryExpressionParts(bin, options: options, sourceText: sourceText)
         } else {
             testDoc = printJSNode(ifStmt.test, options: options, sourceText: sourceText)
         }
         let consDoc = printJSNode(ifStmt.consequent, options: options, sourceText: sourceText)
+        let testContainsNewline = ifStmt.test.sourceRange.count > 0 && {
+            guard ifStmt.test.sourceRange.lowerBound < sourceText.count && ifStmt.test.sourceRange.upperBound <= sourceText.count else { return false }
+            let s = sourceText.index(sourceText.startIndex, offsetBy: ifStmt.test.sourceRange.lowerBound)
+            let e = sourceText.index(sourceText.startIndex, offsetBy: ifStmt.test.sourceRange.upperBound)
+            return sourceText[s..<e].contains("\n")
+        }()
         let headerDoc = group(.concat([
             .text("if ("),
             .indent(.concat([.softline, testDoc])),
             .softline,
             .text(") ")
-        ]))
+        ]), shouldBreak: testContainsNewline)
         var parts: [Doc] = [headerDoc, consDoc]
         if let alt = ifStmt.alternate {
             let altDoc = printJSNode(alt, options: options, sourceText: sourceText)
@@ -220,44 +302,38 @@ public func printJSNode(
         let isAssignment = bin.operatorStr.hasSuffix("=") && bin.operatorStr != "==" && bin.operatorStr != "===" && bin.operatorStr != "!=" && bin.operatorStr != "!==" && bin.operatorStr != "<=" && bin.operatorStr != ">="
         if isAssignment {
             let leftDoc = printJSNode(bin.left, options: options, sourceText: sourceText)
-            let rightDoc = printJSNode(bin.right, options: options, sourceText: sourceText)
-            innerDoc = group(.concat([leftDoc, .text(" \(bin.operatorStr)"), .indent(.concat([.line, rightDoc]))]))
+            if let cond = bin.right as? JSConditionalExpression {
+                let condDoc = printJSNode(cond, options: options, sourceText: sourceText)
+                let flatAssign = Doc.concat([leftDoc, .text(" \(bin.operatorStr) "), condDoc])
+                let breakAfterEq = Doc.concat([leftDoc, .text(" \(bin.operatorStr)"), .indent(.concat([.line, condDoc]))])
+                innerDoc = conditionalGroup([flatAssign, breakAfterEq])
+            } else {
+                let rightDoc = printJSNode(bin.right, options: options, sourceText: sourceText)
+                let shouldHug: Bool
+                if bin.right is JSObjectExpression || bin.right is JSArrayExpression || bin.right is JSFunctionDeclaration {
+                    shouldHug = true
+                } else if let arrow = bin.right as? JSArrowFunctionExpression {
+                    shouldHug = arrow.body is JSBlockStatement || arrow.body is JSObjectExpression
+                } else {
+                    shouldHug = false
+                }
+                if shouldHug {
+                    innerDoc = .concat([leftDoc, .text(" \(bin.operatorStr) "), rightDoc])
+                } else {
+                    innerDoc = group(.concat([
+                        leftDoc,
+                        .text(" \(bin.operatorStr)"),
+                        .indent(.concat([
+                            .line,
+                            rightDoc
+                        ]))
+                    ]))
+                }
+            }
             break
         }
 
-        var operands: [JSNode] = []
-        var curr: JSNode = bin
-        while let b = curr as? JSBinaryExpression, b.operatorStr == bin.operatorStr {
-            operands.insert(b.right, at: 0)
-            curr = b.left
-        }
-        operands.insert(curr, at: 0)
-
-        let firstNode = operands[0]
-        let firstNeedParen = shouldParenthesizeBinaryOperand(firstNode, parentOp: bin.operatorStr, isRight: false)
-        let firstNodeDoc = printJSNode(firstNode, options: options, sourceText: sourceText)
-        let firstDoc = firstNeedParen ? .concat([.text("("), firstNodeDoc, .text(")")]) : firstNodeDoc
-
-        var restParts: [Doc] = []
-        for i in 1..<operands.count {
-            let opNode = operands[i]
-            let needParen = shouldParenthesizeBinaryOperand(opNode, parentOp: bin.operatorStr, isRight: true)
-            let nodeDoc = printJSNode(opNode, options: options, sourceText: sourceText)
-            let wrappedDoc = needParen ? .concat([.text("("), nodeDoc, .text(")")]) : nodeDoc
-
-            let isEqualityComparison = bin.operatorStr == "===" || bin.operatorStr == "!==" || bin.operatorStr == "==" || bin.operatorStr == "!="
-            let shouldInlineOperand = isEqualityComparison && (opNode is JSLiteral || (opNode as? JSIdentifier)?.name == "undefined" || (opNode as? JSIdentifier)?.name == "null")
-            if shouldInlineOperand {
-                restParts.append(.text(" \(bin.operatorStr) "))
-                restParts.append(wrappedDoc)
-            } else {
-                restParts.append(.text(" \(bin.operatorStr)"))
-                restParts.append(.line)
-                restParts.append(wrappedDoc)
-            }
-        }
-
-        innerDoc = group(.concat([firstDoc, .indent(.concat(restParts))]))
+        innerDoc = group(printBinaryExpressionParts(bin, options: options, sourceText: sourceText))
 
     case let un as JSUnaryExpression:
         let argDoc: Doc
@@ -288,7 +364,7 @@ public func printJSNode(
                 }
             }
 
-            if chain.count >= 3 {
+            if chain.count >= 2 {
                 chain.reverse()
                 let baseDoc = printJSNode(baseNode, options: options, sourceText: sourceText)
 
@@ -299,9 +375,21 @@ public func printJSNode(
                     let argsDoc: Doc
                     if item.args.isEmpty {
                         argsDoc = .text("()")
-                    } else {
+                    } else if shouldHugCallArguments(item.args) {
                         let joined = join(separator: .text(", "), argDocs)
-                        argsDoc = .concat([.text("("), .concat(joined), .text(")")])
+                        if let firstArg = item.args.first as? JSArrowFunctionExpression, !(firstArg.body is JSBlockStatement) {
+                            argsDoc = .concat([.text("("), .concat(joined), .text(","), .line, .text(")")])
+                        } else {
+                            argsDoc = .concat([.text("("), .concat(joined), .text(")")])
+                        }
+                    } else {
+                        let joined = join(separator: .concat([.text(","), .line]), argDocs)
+                        argsDoc = group(.concat([
+                            .text("("),
+                            .indent(.concat([.softline, .concat(joined), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
+                            .softline,
+                            .text(")")
+                        ]))
                     }
                     return Doc.concat([.text("."), propDoc, typeArgsDoc, argsDoc])
                 }
@@ -334,13 +422,27 @@ public func printJSNode(
             let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
             if shouldHugCallArguments(call.arguments) {
                 let huggedArgs = join(separator: .text(", "), argDocs)
-                innerDoc = Doc.concat([
+                let huggedDoc = Doc.concat([
                     calleeDoc,
                     typeArgsDoc,
                     .text("("),
                     .concat(huggedArgs),
                     .text(")")
                 ])
+                if call.arguments.count > 1 {
+                    let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
+                    let brokenDoc = group(.concat([
+                        calleeDoc,
+                        typeArgsDoc,
+                        .text("("),
+                        .indent(.concat([.softline, .concat(argsBody), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
+                        .softline,
+                        .text(")")
+                    ]))
+                    innerDoc = conditionalGroup([huggedDoc, brokenDoc])
+                } else {
+                    innerDoc = huggedDoc
+                }
             } else {
                 let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
                 innerDoc = group(.concat([
@@ -385,7 +487,7 @@ public func printJSNode(
             }
             let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
             let trailingCommaDoc = Doc.ifBreak(breakContents: .text(","), flatContents: .empty)
-            let shouldBreak = hasAnyBlankLine || (obj.properties.count > 1 && obj.sourceRange.count > 0 && {
+            let shouldBreak = hasAnyBlankLine || (obj.sourceRange.count > 0 && {
                 guard obj.sourceRange.lowerBound < sourceText.count && obj.sourceRange.upperBound <= sourceText.count else { return false }
                 let startIdx = sourceText.index(sourceText.startIndex, offsetBy: obj.sourceRange.lowerBound)
                 let endIdx = sourceText.index(sourceText.startIndex, offsetBy: obj.sourceRange.upperBound)
@@ -415,7 +517,14 @@ public func printJSNode(
         }
 
     case let id as JSIdentifier:
-        innerDoc = .text(id.name)
+        var text = id.name
+        if text.contains("\n") {
+            text = ensureTrailingCommaInMultilineDelimiters(text)
+        }
+        if !options.singleQuote {
+            text = replaceSingleQuotesOutsideComments(in: text)
+        }
+        innerDoc = .text(text)
 
     case let lit as JSLiteral:
         if lit.isString {
@@ -509,12 +618,17 @@ public func printJSNode(
             }
             let joinedMulti = join(separator: .concat([.text(","), .line]), specDocs)
             let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
-            let bracedDoc = group(.concat([
-                .text("{"),
-                .indent(.concat([lineDoc, .concat(joinedMulti), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
-                lineDoc,
-                .text("}")
-            ]))
+            let bracedDoc: Doc
+            if imp.specifiers.count == 1 {
+                bracedDoc = .concat([.text(options.bracketSpacing ? "{ " : "{"), specDocs[0], .text(options.bracketSpacing ? " }" : "}")])
+            } else {
+                bracedDoc = group(.concat([
+                    .text("{"),
+                    .indent(.concat([lineDoc, .concat(joinedMulti), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
+                    lineDoc,
+                    .text("}")
+                ]))
+            }
             clauses.append(bracedDoc)
         }
 
@@ -584,9 +698,24 @@ public func printJSNode(
     case let typeAlias as JSTypeAliasDeclaration:
         let semiDoc: Doc = options.semi ? .text(";") : .empty
         let typeParams = ensureTrailingCommaInMultilineDelimiters(typeAlias.typeParameters ?? "", isTypeParameters: true)
-        let prefix = "type \(typeAlias.id.name)\(typeParams) = "
-        let formattedType = formatTypeAnnotation(typeAlias.typeAnnotation, options: options, prefix: "export " + prefix)
-        innerDoc = .concat([.text(prefix), formattedType, semiDoc])
+        let prefix = "type \(typeAlias.id.name)\(typeParams) ="
+        let isExported = typeAlias.sourceRange.lowerBound >= 7 && sourceText[sourceText.index(sourceText.startIndex, offsetBy: max(0, typeAlias.sourceRange.lowerBound - 10))..<sourceText.index(sourceText.startIndex, offsetBy: typeAlias.sourceRange.lowerBound)].contains("export")
+        let actualPrefix = isExported ? "export " + prefix : prefix
+        let formattedType = formatTypeAnnotation(typeAlias.typeAnnotation, options: options, prefix: actualPrefix + " ")
+        let trimmedType = typeAlias.typeAnnotation.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedType.hasPrefix("{") {
+            innerDoc = .concat([.text(prefix + " "), formattedType, semiDoc])
+        } else if trimmedType.hasPrefix("|") || trimmedType.hasPrefix("/*") || trimmedType.hasPrefix("//") {
+            innerDoc = .concat([.text(prefix), .indent(.concat([.line, formattedType])), semiDoc])
+        } else {
+            let lastLineOfPrefix = actualPrefix.split(separator: "\n").last.map(String.init) ?? actualPrefix
+            let firstLineOfType = typeAlias.typeAnnotation.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n").first.map(String.init) ?? ""
+            if lastLineOfPrefix.count + 1 + firstLineOfType.count <= options.printWidth {
+                innerDoc = .concat([.text(prefix + " "), formattedType, semiDoc])
+            } else {
+                innerDoc = .concat([.text(prefix), .indent(.concat([.line, formattedType])), semiDoc])
+            }
+        }
 
     case let interfaceDecl as JSInterfaceDeclaration:
         let typeParams = ensureTrailingCommaInMultilineDelimiters(interfaceDecl.typeParameters ?? "", isTypeParameters: true)
@@ -690,24 +819,28 @@ public func printJSNode(
     case let asExpr as JSTypeAssertionExpression:
         let exprDoc = printJSNode(asExpr.expression, options: options, sourceText: sourceText)
         var typeStr = asExpr.typeAnnotation.trimmingCharacters(in: .whitespacesAndNewlines)
-        if typeStr.hasPrefix("|") {
+        let isUnion = typeStr.hasPrefix("|") || typeStr.contains("\n|") || typeStr.contains("\n  |") || typeStr.contains("\n    |") || typeStr.contains("\n      |")
+        if !isUnion && typeStr.hasPrefix("|") {
             typeStr = typeStr.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if typeStr.contains("\n") {
             let parts = typeStr.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-            let filtered = parts.map { $0.hasPrefix("|") ? String($0.dropFirst()).trimmingCharacters(in: .whitespaces) : $0 }
-            let singleLine = filtered.joined(separator: " | ")
-            if singleLine.count <= options.printWidth {
-                typeStr = singleLine
+            if parts.contains(where: { $0.hasPrefix("|") }) {
+                let filtered = parts.map { $0.hasPrefix("|") ? String($0.dropFirst()).trimmingCharacters(in: .whitespaces) : $0 }
+                let singleLine = filtered.joined(separator: " | ")
+                if singleLine.count <= options.printWidth {
+                    typeStr = singleLine
+                }
             }
         }
         if !options.singleQuote && !typeStr.contains("\"") && typeStr.contains("'") {
             typeStr = typeStr.replacingOccurrences(of: "'", with: "\"")
         }
-        if asExpr.expression is JSObjectExpression || asExpr.expression is JSTypeAssertionExpression {
-            innerDoc = .concat([exprDoc, .text(" as "), .text(typeStr)])
-        } else {
+        typeStr = ensureTrailingCommaInMultilineDelimiters(typeStr)
+        if isUnion && typeStr.contains("\n") {
             innerDoc = group(.concat([exprDoc, .text(" as"), .indent(.concat([.line, .text(typeStr)]))]))
+        } else {
+            innerDoc = .concat([exprDoc, .text(" as "), .text(typeStr)])
         }
 
     case let paren as JSParenthesizedExpression:
@@ -779,25 +912,17 @@ public func printJSNode(
         let testDoc = printJSNode(cond.test, options: options, sourceText: sourceText)
         let consequentDoc = printJSNode(cond.consequent, options: options, sourceText: sourceText)
         let alternateDoc = printJSNode(cond.alternate, options: options, sourceText: sourceText)
-        let flatDoc = Doc.concat([
-            testDoc,
-            .text(" ? "),
-            consequentDoc,
-            .text(" : "),
-            alternateDoc
-        ])
-        let breakDoc = Doc.concat([
+        innerDoc = group(.concat([
             testDoc,
             .indent(.concat([
                 .line,
                 .text("? "),
-                consequentDoc,
+                .align(.number(2), consequentDoc),
                 .line,
                 .text(": "),
-                alternateDoc
+                .align(.number(2), alternateDoc)
             ]))
-        ])
-        innerDoc = conditionalGroup([flatDoc, breakDoc])
+        ]))
 
     case let regex as JSRegExpLiteral:
         innerDoc = .text(regex.raw)
@@ -980,11 +1105,62 @@ private func printStatementSequence(
     return docs
 }
 
-private func printTypeArgumentsDoc(_ typeArgs: String) -> Doc {
-    guard typeArgs.hasPrefix("<") && typeArgs.hasSuffix(">") else {
-        return .text(typeArgs)
+private func printTernaryFlat(_ cond: JSConditionalExpression, options: PrintOptions, sourceText: String) -> Doc {
+    let testDoc = printJSNode(cond.test, options: options, sourceText: sourceText)
+    let consequentDoc = printJSNode(cond.consequent, options: options, sourceText: sourceText)
+    let alternateDoc = printJSNode(cond.alternate, options: options, sourceText: sourceText)
+    return .concat([testDoc, .text(" ? "), consequentDoc, .text(" : "), alternateDoc])
+}
+
+private func printBinaryExpressionParts(_ bin: JSBinaryExpression, options: PrintOptions, sourceText: String) -> Doc {
+    var operands: [JSNode] = []
+    var curr: JSNode = bin
+    while let b = curr as? JSBinaryExpression, b.operatorStr == bin.operatorStr {
+        operands.insert(b.right, at: 0)
+        curr = b.left
     }
-    let inner = typeArgs.dropFirst().dropLast()
+    operands.insert(curr, at: 0)
+
+    let firstNode = operands[0]
+    let firstNeedParen = shouldParenthesizeBinaryOperand(firstNode, parentOp: bin.operatorStr, isRight: false)
+    let firstNodeDoc = printJSNode(firstNode, options: options, sourceText: sourceText)
+    let firstDoc = firstNeedParen ? .concat([.text("("), firstNodeDoc, .text(")")]) : firstNodeDoc
+
+    var restParts: [Doc] = []
+    for i in 1..<operands.count {
+        let opNode = operands[i]
+        let needParen = shouldParenthesizeBinaryOperand(opNode, parentOp: bin.operatorStr, isRight: true)
+        let nodeDoc = printJSNode(opNode, options: options, sourceText: sourceText)
+        let wrappedDoc = needParen ? .concat([.text("("), nodeDoc, .text(")")]) : nodeDoc
+
+        let isEqualityComparison = bin.operatorStr == "===" || bin.operatorStr == "!==" || bin.operatorStr == "==" || bin.operatorStr == "!="
+        let shouldInlineOperand = isEqualityComparison && (opNode is JSLiteral || (opNode as? JSIdentifier)?.name == "undefined" || (opNode as? JSIdentifier)?.name == "null")
+        if shouldInlineOperand {
+            restParts.append(.text(" \(bin.operatorStr) "))
+            restParts.append(wrappedDoc)
+        } else {
+            restParts.append(.text(" \(bin.operatorStr)"))
+            restParts.append(.line)
+            restParts.append(wrappedDoc)
+        }
+    }
+
+    if bin.operatorStr == "+" || bin.operatorStr == "-" || bin.operatorStr == "*" || bin.operatorStr == "/" {
+        return .concat([firstDoc, .indent(.concat(restParts))])
+    } else {
+        return .concat([firstDoc, .concat(restParts)])
+    }
+}
+
+private func printTypeArgumentsDoc(_ typeArgs: String, options: PrintOptions? = nil) -> Doc {
+    var raw = typeArgs
+    if let options, !options.singleQuote {
+        raw = replaceSingleQuotesOutsideComments(in: raw)
+    }
+    guard raw.hasPrefix("<") && raw.hasSuffix(">") else {
+        return .text(raw)
+    }
+    let inner = raw.dropFirst().dropLast()
     let parts = splitTypeArguments(String(inner))
     guard !parts.isEmpty else {
         return .text("<>")
@@ -1043,21 +1219,49 @@ private func splitTypeArguments(_ inner: String) -> [String] {
     return parts
 }
 
+private func isSimpleArg(_ node: JSNode) -> Bool {
+    if let id = node as? JSIdentifier {
+        return !id.name.hasPrefix("...")
+    }
+    if node is JSLiteral {
+        return true
+    }
+    if let un = node as? JSUnaryExpression {
+        if un.operatorStr == "..." { return false }
+        return isSimpleArg(un.argument)
+    }
+    if let mem = node as? JSMemberExpression, !mem.computed {
+        return isSimpleArg(mem.object)
+    }
+    return false
+}
+
 private func shouldHugCallArguments(_ args: [JSNode]) -> Bool {
     guard !args.isEmpty else { return false }
+    if args.contains(where: { ($0 as? JSUnaryExpression)?.operatorStr == "..." || ($0 as? JSIdentifier)?.name.hasPrefix("...") == true }) {
+        return false
+    }
     if args.count == 1 {
         return isHuggableArg(args[0])
     }
-    let huggableCount = args.filter { isHuggableArg($0) }.count
-    if huggableCount == 1 && isHuggableArg(args.last!) {
-        return true
+    if isHuggableArg(args.last!) {
+        let preceding = args.dropLast()
+        if preceding.allSatisfy({ isSimpleArg($0) }) {
+            return true
+        }
+    }
+    if isHuggableArg(args.first!) {
+        let following = args.dropFirst()
+        if following.allSatisfy({ isSimpleArg($0) || ($0 as? JSObjectExpression)?.properties.isEmpty == true || ($0 as? JSArrayExpression)?.elements.isEmpty == true }) {
+            return true
+        }
     }
     return false
 }
 
 private func isHuggableArg(_ node: JSNode) -> Bool {
     if let arrow = node as? JSArrowFunctionExpression {
-        return arrow.body is JSBlockStatement
+        return arrow.body is JSBlockStatement || arrow.body is JSObjectExpression || arrow.body is JSConditionalExpression
     }
     if node is JSFunctionDeclaration {
         return true
@@ -1076,7 +1280,11 @@ private func ensureTrailingCommaInMultilineDelimiters(_ text: String, isTypePara
         var shouldAddComma = false
         if trimmed.hasPrefix(")") || trimmed.hasPrefix("):") || trimmed.hasPrefix(")=>") || trimmed.hasPrefix(") =>") {
             shouldAddComma = true
-        } else if trimmed.hasPrefix(">(") || trimmed.hasPrefix("> =") || trimmed.hasPrefix(">{") || trimmed.hasPrefix("> {") {
+        } else if trimmed == "]" {
+            shouldAddComma = true
+        } else if trimmed.hasPrefix("}") || trimmed.hasPrefix("} =") || trimmed.hasPrefix("}:") {
+            shouldAddComma = true
+        } else if trimmed.hasPrefix(">(") || trimmed.hasPrefix(">{") || trimmed.hasPrefix("> {") {
             shouldAddComma = true
         } else if trimmed == ">" {
             var nextIdx = i + 1
@@ -1100,11 +1308,52 @@ private func ensureTrailingCommaInMultilineDelimiters(_ text: String, isTypePara
             if prevIdx >= 0 {
                 let prevLine = lines[prevIdx]
                 let prevTrimmed = prevLine.trimmingCharacters(in: .whitespaces)
+                var isRestParam = false
+                var isConditionalType = false
+                if trimmed.hasPrefix(")") || trimmed.hasPrefix("):") || trimmed.hasPrefix(")=>") || trimmed.hasPrefix(") =>") {
+                    if prevTrimmed.hasPrefix("...") {
+                        isRestParam = true
+                    } else {
+                        var bIdx = prevIdx
+                        var bracketDepth = 0
+                        var parenDepth = 0
+                        while bIdx >= 0 {
+                            let bLine = lines[bIdx].trimmingCharacters(in: .whitespaces)
+                            for ch in bLine.reversed() {
+                                if ch == "]" { bracketDepth += 1 }
+                                else if ch == "[" { bracketDepth = max(0, bracketDepth - 1) }
+                                else if ch == ")" { parenDepth += 1 }
+                                else if ch == "(" { parenDepth = max(0, parenDepth - 1) }
+                            }
+                            if bracketDepth == 0 && parenDepth == 0 {
+                                if bLine.hasPrefix("...") {
+                                    isRestParam = true
+                                    break
+                                }
+                                if bLine.hasPrefix("?") || bLine.hasPrefix(":") || bLine.hasSuffix("?") || bLine.hasSuffix(":") {
+                                    isConditionalType = true
+                                }
+                                if bLine.hasSuffix(",") || bLine.hasSuffix("(") {
+                                    break
+                                }
+                            }
+                            bIdx -= 1
+                        }
+                    }
+                    if prevTrimmed == "never" || prevTrimmed.hasPrefix(":") || prevTrimmed.hasPrefix("?") {
+                        isConditionalType = true
+                    }
+                }
+                let isUnionOrIntersection = (trimmed.hasPrefix(")") || trimmed.hasPrefix("):")) && (prevTrimmed.hasPrefix("|") || prevTrimmed.hasPrefix("&"))
                 if !prevTrimmed.isEmpty &&
+                   !isRestParam &&
+                   !isConditionalType &&
+                   !isUnionOrIntersection &&
                    !prevTrimmed.hasSuffix(",") &&
                    !prevTrimmed.hasSuffix("(") &&
                    !prevTrimmed.hasSuffix("<") &&
                    !prevTrimmed.hasSuffix("{") &&
+                   !prevTrimmed.hasSuffix("[") &&
                    !prevTrimmed.hasSuffix(";") {
                     if let commentRange = prevLine.range(of: "//") {
                         let codePart = prevLine[..<commentRange.lowerBound].trimmingCharacters(in: .whitespaces)
@@ -1178,17 +1427,17 @@ private func formatTypeMembersBody(_ raw: String, options: PrintOptions) -> Stri
             continue
         }
 
-        var nextIsTernary = false
+        var nextIsContinuation = false
         for j in (i + 1)..<lines.count {
             let nextTrimmed = lines[j].trimmingCharacters(in: .whitespaces)
             if !nextTrimmed.isEmpty {
-                if nextTrimmed.hasPrefix("?") || nextTrimmed.hasPrefix(":") {
-                    nextIsTernary = true
+                if nextTrimmed.hasPrefix("?") || nextTrimmed.hasPrefix(":") || nextTrimmed.hasPrefix("&") || nextTrimmed.hasPrefix("|") {
+                    nextIsContinuation = true
                 }
                 break
             }
         }
-        if nextIsTernary || rtrimmed.hasSuffix("?") || rtrimmed.hasSuffix(":") {
+        if nextIsContinuation || rtrimmed.hasSuffix("?") || rtrimmed.hasSuffix(":") || rtrimmed.hasSuffix("&") || rtrimmed.hasSuffix("|") || rtrimmed.hasSuffix("=") {
             formattedLines.append(cleaned)
             continue
         }
@@ -1214,45 +1463,83 @@ private func formatTypeMembersBody(_ raw: String, options: PrintOptions) -> Stri
     return "{\n" + formattedLines.joined(separator: "\n") + "\n\(closingIndent)}"
 }
 
-private func formatTypeAnnotation(_ raw: String, options: PrintOptions, prefix: String = "") -> Doc {
-    var text = ensureTrailingCommaInMultilineDelimiters(raw)
+private func replaceSingleQuotesOutsideComments(in text: String) -> String {
+    guard text.contains("'") else { return text }
+    var result = ""
+    var i = text.startIndex
+    var inBlockComment = false
+    var inLineComment = false
 
-    if text.contains("\n") {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        var newLines: [String] = []
-        var i = 0
-        while i < lines.count {
-            let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("| ") {
-                var unionItems = [String(trimmed.dropFirst(2))]
-                var j = i + 1
-                while j < lines.count {
-                    let nextTrimmed = lines[j].trimmingCharacters(in: .whitespaces)
-                    if nextTrimmed.hasPrefix("| ") {
-                        unionItems.append(String(nextTrimmed.dropFirst(2)))
-                        j += 1
-                    } else {
-                        break
-                    }
-                }
-                let joinedUnion = unionItems.joined(separator: " | ")
-                let leadingIndent = line.prefix(while: { $0 == " " })
-                let combined = "\(leadingIndent)\(joinedUnion)"
-                if combined.count <= options.printWidth {
-                    newLines.append(combined)
-                    i = j
+    while i < text.endIndex {
+        if inBlockComment {
+            result.append(text[i])
+            if text[i] == "*" && text.index(after: i) < text.endIndex && text[text.index(after: i)] == "/" {
+                result.append("/")
+                i = text.index(i, offsetBy: 2)
+                inBlockComment = false
+                continue
+            }
+            i = text.index(after: i)
+            continue
+        }
+        if inLineComment {
+            result.append(text[i])
+            if text[i] == "\n" {
+                inLineComment = false
+            }
+            i = text.index(after: i)
+            continue
+        }
+        if text[i] == "/" && text.index(after: i) < text.endIndex {
+            let next = text[text.index(after: i)]
+            if next == "*" {
+                result.append("/*")
+                i = text.index(i, offsetBy: 2)
+                inBlockComment = true
+                continue
+            } else if next == "/" {
+                result.append("//")
+                i = text.index(i, offsetBy: 2)
+                inLineComment = true
+                continue
+            }
+        }
+        if text[i] == "'" {
+            let after = text.index(after: i)
+            if let closingQuote = text[after...].firstIndex(of: "'") {
+                let inside = text[after..<closingQuote]
+                if !inside.isEmpty && inside.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "$" || $0 == "-" }) {
+                    result.append("\"\(inside)\"")
+                    i = text.index(after: closingQuote)
                     continue
                 }
             }
-            newLines.append(line)
-            i += 1
         }
-        text = newLines.joined(separator: "\n")
+        result.append(text[i])
+        i = text.index(after: i)
+    }
+    return result
+}
+
+private func formatTypeAnnotation(_ raw: String, options: PrintOptions, prefix: String = "") -> Doc {
+    var text = ensureTrailingCommaInMultilineDelimiters(raw)
+    if !options.singleQuote {
+        text = replaceSingleQuotesOutsideComments(in: text)
     }
 
     var searchStart = text.startIndex
     while let openBrace = text[searchStart...].firstIndex(of: "{") {
+        let beforeOpen = String(text[..<openBrace])
+        let lastCommentStart = beforeOpen.range(of: "/*", options: .backwards)?.lowerBound
+        let lastCommentEnd = beforeOpen.range(of: "*/", options: .backwards)?.lowerBound
+        if let cStart = lastCommentStart {
+            if lastCommentEnd == nil || lastCommentEnd! < cStart {
+                if let endComment = text[openBrace...].range(of: "*/")?.upperBound {
+                    searchStart = endComment
+                    continue
+                }
+            }
+        }
         let afterOpen = text.index(after: openBrace)
         if afterOpen < text.endIndex {
             var depth = 1
@@ -1280,14 +1567,6 @@ private func formatTypeAnnotation(_ raw: String, options: PrintOptions, prefix: 
             }
         }
         searchStart = afterOpen
-    }
-
-    if !text.contains("\n") {
-        let lastPrefixLine = prefix.split(separator: "\n").last.map(String.init) ?? prefix
-        if (lastPrefixLine.count + text.count + (options.semi ? 1 : 0)) > options.printWidth {
-            return .concat([.indent(.concat([.line, .text(text)]))])
-        }
-        return .text(text)
     }
 
     return .text(text)

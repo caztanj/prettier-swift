@@ -227,6 +227,11 @@ private struct JSParserImpl {
 
         let startUtf8 = source.distance(from: source.startIndex, to: index)
 
+        if source[index] == ";" {
+            index = source.index(after: index)
+            return nil
+        }
+
         if source[index] == "{" {
             return try parseBlockStatement()
         }
@@ -285,10 +290,13 @@ private struct JSParserImpl {
                     typeAnnotation = scanVariableTypeAnnotation()
                 }
 
-                skipWhitespaceAndComments()
+                var p = index
+                while p < source.endIndex && (source[p] == " " || source[p] == "\t") {
+                    p = source.index(after: p)
+                }
                 var initVal: JSNode? = nil
-                if index < source.endIndex && source[index] == "=" {
-                    index = source.index(after: index)
+                if p < source.endIndex && source[p] == "=" {
+                    index = source.index(after: p)
                     skipWhitespaceAndComments()
                     initVal = try parseExpression()
                 }
@@ -352,7 +360,6 @@ private struct JSParserImpl {
             } else if index < source.endIndex && source[index] == ";" {
                 index = source.index(after: index)
             } else {
-                let saved = index
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "{" {
                     body = try parseBlockStatement()
@@ -790,7 +797,12 @@ private struct JSParserImpl {
                 skipWhitespaceAndComments()
                 if index < source.endIndex && source[index] == "=" {
                     index = source.index(after: index)
-                    skipWhitespaceAndComments()
+                    while index < source.endIndex && (source[index] == " " || source[index] == "\t") {
+                        index = source.index(after: index)
+                    }
+                    if index < source.endIndex && (source[index] == "\n" || source[index] == "\r") {
+                        index = source.index(after: index)
+                    }
                     let start = index
                     var parenDepth = 0
                     var braceDepth = 0
@@ -823,6 +835,93 @@ private struct JSParserImpl {
                 }
             }
             index = saved
+        }
+
+        if matchKeyword("class") {
+            let startUtf8 = source.distance(from: source.startIndex, to: index)
+            _ = scanWord()
+            skipWhitespaceAndComments()
+            var name: JSIdentifier? = nil
+            if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                let idStart = source.distance(from: source.startIndex, to: index)
+                let word = scanWord()
+                let idEnd = source.distance(from: source.startIndex, to: index)
+                name = JSIdentifier(name: word, range: idStart..<idEnd)
+            }
+            skipWhitespaceAndComments()
+            var typeParams: String? = nil
+            if index < source.endIndex && source[index] == "<" {
+                typeParams = scanTypeParameters()
+            }
+            skipWhitespaceAndComments()
+            var superClass: JSNode? = nil
+            if matchKeyword("extends") {
+                _ = scanWord()
+                skipWhitespaceAndComments()
+                superClass = try parseExpression()
+                skipWhitespaceAndComments()
+            }
+            var members: [JSNode] = []
+            if index < source.endIndex && source[index] == "{" {
+                index = source.index(after: index)
+                while index < source.endIndex {
+                    skipWhitespaceAndComments()
+                    if index < source.endIndex && source[index] == "}" {
+                        index = source.index(after: index)
+                        break
+                    }
+                    if index < source.endIndex && source[index] == ";" {
+                        index = source.index(after: index)
+                        continue
+                    }
+                    let memberStart = source.distance(from: source.startIndex, to: index)
+                    var isAsync = false
+                    if matchKeyword("async") {
+                        let saved = index
+                        _ = scanWord()
+                        skipWhitespaceAndComments()
+                        if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
+                            isAsync = true
+                        } else {
+                            index = saved
+                        }
+                    }
+                    let keyStart = source.distance(from: source.startIndex, to: index)
+                    let key = scanWord()
+                    let keyEnd = source.distance(from: source.startIndex, to: index)
+                    skipWhitespaceAndComments()
+                    var memberTypeParams: String? = nil
+                    if index < source.endIndex && source[index] == "<" {
+                        memberTypeParams = scanTypeParameters()
+                    }
+                    skipWhitespaceAndComments()
+                    if index < source.endIndex && source[index] == "(" {
+                        let params = try parseParameterList()
+                        skipWhitespaceAndComments()
+                        var returnType: String? = nil
+                        if index < source.endIndex && source[index] == ":" {
+                            returnType = scanReturnType()
+                        }
+                        skipWhitespaceAndComments()
+                        var body: JSBlockStatement? = nil
+                        if index < source.endIndex && source[index] == "{" {
+                            body = try parseBlockStatement()
+                        }
+                        let memberEnd = source.distance(from: source.startIndex, to: index)
+                        let fnNode = JSFunctionDeclaration(id: nil, typeParameters: memberTypeParams, params: params, body: body, isAsync: isAsync, returnType: returnType, range: memberStart..<memberEnd)
+                        members.append(JSProperty(key: JSIdentifier(name: key, range: keyStart..<keyEnd), value: fnNode, method: true, range: memberStart..<memberEnd))
+                    } else {
+                        while index < source.endIndex && source[index] != ";" && source[index] != "\n" && source[index] != "}" {
+                            index = source.index(after: index)
+                        }
+                        if index < source.endIndex && source[index] == ";" {
+                            index = source.index(after: index)
+                        }
+                    }
+                }
+            }
+            let endUtf8 = source.distance(from: source.startIndex, to: index)
+            return JSClassDeclaration(id: name, typeParameters: typeParams, superClass: superClass, body: members, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("interface") {
@@ -1011,7 +1110,7 @@ private struct JSParserImpl {
                 } else {
                     body.append(stmt)
                 }
-            } else {
+            } else if index == before {
                 index = source.index(after: index)
             }
         }
@@ -1086,10 +1185,19 @@ private struct JSParserImpl {
                 let typePart = String(trimmed[afterCol...]).trimmingCharacters(in: .whitespaces)
                 var cleanType = typePart
                 if cleanType.contains("\n") && cleanType.hasPrefix("{") && cleanType.hasSuffix("}") {
-                    let inner = cleanType.dropFirst().dropLast().trimmingCharacters(in: .whitespacesAndNewlines)
-                    var member = inner
-                    if !member.hasSuffix(";") { member += ";" }
-                    cleanType = "{\n  \(member)\n}"
+                    let inner = cleanType.dropFirst().dropLast()
+                    var lines = inner.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                    while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+                    while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+                    var formattedLines: [String] = []
+                    for line in lines {
+                        var trimmedLine = line.trimmingCharacters(in: .whitespaces)
+                        if !trimmedLine.isEmpty && !trimmedLine.hasSuffix(";") {
+                            trimmedLine += ";"
+                        }
+                        formattedLines.append("    " + trimmedLine)
+                    }
+                    cleanType = "{\n" + formattedLines.joined(separator: "\n") + "\n  }"
                 }
                 return "\(paramPart): \(cleanType)"
             }
@@ -1183,14 +1291,21 @@ private struct JSParserImpl {
                     break
                 }
                 if source[index] == "\n" || source[index] == "\r" {
-                    var p = source.index(after: index)
-                    while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
-                        p = source.index(after: p)
+                    var prev = source.index(before: index)
+                    while prev > source.startIndex && (source[prev] == " " || source[prev] == "\t") {
+                        prev = source.index(before: prev)
                     }
-                    if p >= source.endIndex { break }
-                    let nextCh = source[p]
-                    if nextCh != "|" && nextCh != "&" {
-                        break
+                    let lineEndsWithOp = source[prev] == "|" || source[prev] == "&"
+                    if !lineEndsWithOp {
+                        var p = source.index(after: index)
+                        while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
+                            p = source.index(after: p)
+                        }
+                        if p >= source.endIndex { break }
+                        let nextCh = source[p]
+                        if nextCh != "|" && nextCh != "&" {
+                            break
+                        }
                     }
                 }
             }
@@ -1344,6 +1459,7 @@ private struct JSParserImpl {
             index = source.index(after: index)
         }
         var params: [JSNode] = []
+        var paramStart = index
         var parenDepth = 0
         var braceDepth = 0
         var bracketDepth = 0
@@ -1412,46 +1528,84 @@ private struct JSParserImpl {
             if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && angleDepth == 0 && ch == "," {
                 let formatted = formatParamString(currentParam)
                 if !formatted.isEmpty {
-                    params.append(JSIdentifier(name: formatted))
+                    let pStart = source.distance(from: source.startIndex, to: paramStart)
+                    let pEnd = source.distance(from: source.startIndex, to: index)
+                    params.append(JSIdentifier(name: formatted, range: pStart..<pEnd))
                 }
                 currentParam = ""
                 index = source.index(after: index)
+                paramStart = index
                 continue
             }
 
-            if ch == "\n" {
-                currentParam.append("\n")
-            } else if ch.isWhitespace {
-                if !currentParam.isEmpty && !currentParam.hasSuffix(" ") && !currentParam.hasSuffix("\n") {
-                    currentParam.append(" ")
-                }
-            } else {
+            if parenDepth > 0 || braceDepth > 0 || bracketDepth > 0 || angleDepth > 0 {
                 currentParam.append(ch)
+            } else {
+                if ch == "\n" {
+                    currentParam.append("\n")
+                } else if ch.isWhitespace {
+                    if currentParam.hasSuffix("\n") {
+                        currentParam.append(ch)
+                    } else if currentParam.hasSuffix(" ") {
+                        if let lastNl = currentParam.lastIndex(of: "\n") {
+                            let afterNl = currentParam[currentParam.index(after: lastNl)...]
+                            if afterNl.allSatisfy({ $0.isWhitespace }) {
+                                currentParam.append(ch)
+                            }
+                        }
+                    } else {
+                        currentParam.append(" ")
+                    }
+                } else {
+                    currentParam.append(ch)
+                }
             }
             index = source.index(after: index)
         }
 
         let formatted = formatParamString(currentParam)
         if !formatted.isEmpty {
-            params.append(JSIdentifier(name: formatted))
+            let pStart = source.distance(from: source.startIndex, to: paramStart)
+            let pEnd = source.distance(from: source.startIndex, to: index)
+            params.append(JSIdentifier(name: formatted, range: pStart..<pEnd))
         }
 
         return params
     }
 
     private mutating func parseExpression() throws -> JSNode {
-        let expr = try parseBinaryExpression(minPrecedence: 0)
+        return try parseAssignmentExpression()
+    }
+
+    private mutating func parseAssignmentExpression() throws -> JSNode {
+        let left = try parseConditionalExpression()
         let saved = index
         skipWhitespaceAndComments()
-        if index < source.endIndex && source[index] == "?" {
+        if let (op, prec) = peekBinaryOperator(), prec == 1 {
+            index = source.index(index, offsetBy: op.count)
+            skipWhitespaceAndComments()
+            let right = try parseAssignmentExpression()
+            let bStart = left.sourceRange.lowerBound
+            let bEnd = max(bStart, right.sourceRange.upperBound)
+            return JSBinaryExpression(operatorStr: op, left: left, right: right, range: bStart..<bEnd)
+        }
+        index = saved
+        return left
+    }
+
+    private mutating func parseConditionalExpression() throws -> JSNode {
+        let expr = try parseBinaryExpression(minPrecedence: 2)
+        let saved = index
+        skipWhitespaceAndComments()
+        if index < source.endIndex && source[index] == "?" && !source[index...].hasPrefix("??") && !source[index...].hasPrefix("?.") {
             index = source.index(after: index)
             skipWhitespaceAndComments()
-            let consequent = try parseExpression()
+            let consequent = try parseAssignmentExpression()
             skipWhitespaceAndComments()
             if index < source.endIndex && source[index] == ":" {
                 index = source.index(after: index)
                 skipWhitespaceAndComments()
-                let alternate = try parseExpression()
+                let alternate = try parseAssignmentExpression()
                 let startUtf8 = expr.sourceRange.lowerBound
                 let endUtf8 = max(startUtf8, alternate.sourceRange.upperBound)
                 return JSConditionalExpression(test: expr, consequent: consequent, alternate: alternate, range: startUtf8..<endUtf8)
@@ -1536,21 +1690,26 @@ private struct JSParserImpl {
             return JSIdentifier(name: "")
         }
 
+        let startUtf8 = source.distance(from: source.startIndex, to: index)
+
         if matchKeyword("await") {
             _ = scanWord()
             skipWhitespaceAndComments()
             let argument = try parseUnaryOrPrimary()
-            return JSAwaitExpression(argument: argument)
+            let endUtf8 = max(startUtf8, argument.sourceRange.upperBound)
+            return JSAwaitExpression(argument: argument, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("new") {
+            let startUtf8 = source.distance(from: source.startIndex, to: index)
             _ = scanWord()
             skipWhitespaceAndComments()
             let target = try parsePostfix()
+            let endUtf8 = max(startUtf8, target.sourceRange.upperBound)
             if let call = target as? JSCallExpression {
-                return JSNewExpression(callee: call.callee, arguments: call.arguments, typeArguments: call.typeArguments)
+                return JSNewExpression(callee: call.callee, arguments: call.arguments, typeArguments: call.typeArguments, range: startUtf8..<endUtf8)
             } else {
-                return JSNewExpression(callee: target, arguments: [])
+                return JSNewExpression(callee: target, arguments: [], range: startUtf8..<endUtf8)
             }
         }
 
@@ -1558,39 +1717,48 @@ private struct JSParserImpl {
             _ = scanWord()
             skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: "typeof ", prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: "typeof ", prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("void") {
             _ = scanWord()
             skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: "void ", prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: "void ", prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("delete") {
             _ = scanWord()
             skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: "delete ", prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: "delete ", prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
 
         if source[index...].hasPrefix("++") {
             index = source.index(index, offsetBy: 2)
+            skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: "++", prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: "++", prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
         if source[index...].hasPrefix("--") {
             index = source.index(index, offsetBy: 2)
+            skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: "--", prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: "--", prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
 
         let ch = source[index]
         if ch == "!" || ch == "~" || ch == "+" || ch == "-" {
             index = source.index(after: index)
+            skipWhitespaceAndComments()
             let operand = try parseUnaryOrPrimary()
-            return JSUnaryExpression(operatorStr: String(ch), prefix: true, argument: operand)
+            let endUtf8 = max(startUtf8, operand.sourceRange.upperBound)
+            return JSUnaryExpression(operatorStr: String(ch), prefix: true, argument: operand, range: startUtf8..<endUtf8)
         }
 
         return try parsePostfix()
@@ -1604,7 +1772,15 @@ private struct JSParserImpl {
             skipWhitespaceAndComments()
             if source[index] == ")" { break }
             let before = index
-            args.append(try parseExpression())
+            if source[index...].hasPrefix("...") {
+                let startUtf8 = source.distance(from: source.startIndex, to: index)
+                index = source.index(index, offsetBy: 3)
+                let expr = try parseExpression()
+                let endUtf8 = source.distance(from: source.startIndex, to: index)
+                args.append(JSUnaryExpression(operatorStr: "...", prefix: true, argument: expr, range: startUtf8..<endUtf8))
+            } else {
+                args.append(try parseExpression())
+            }
             skipWhitespaceAndComments()
             if index < source.endIndex && source[index] == "," {
                 index = source.index(after: index)
@@ -1833,14 +2009,21 @@ private struct JSParserImpl {
                     break
                 }
                 if ch == "\n" || ch == "\r" {
-                    var p = source.index(after: index)
-                    while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
-                        p = source.index(after: p)
+                    var prev = source.index(before: index)
+                    while prev > source.startIndex && (source[prev] == " " || source[prev] == "\t") {
+                        prev = source.index(before: prev)
                     }
-                    if p >= source.endIndex { break }
-                    let nextCh = source[p]
-                    if nextCh != "|" && nextCh != "&" {
-                        break
+                    let lineEndsWithOp = source[prev] == "|" || source[prev] == "&"
+                    if !lineEndsWithOp {
+                        var p = source.index(after: index)
+                        while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
+                            p = source.index(after: p)
+                        }
+                        if p >= source.endIndex { break }
+                        let nextCh = source[p]
+                        if nextCh != "|" && nextCh != "&" {
+                            break
+                        }
                     }
                 }
             }
@@ -1882,10 +2065,12 @@ private struct JSParserImpl {
 
             if source[index...].hasPrefix("++") {
                 index = source.index(index, offsetBy: 2)
-                expr = JSUnaryExpression(operatorStr: "++", prefix: false, argument: expr)
+                let endUtf8 = source.distance(from: source.startIndex, to: index)
+                expr = JSUnaryExpression(operatorStr: "++", prefix: false, argument: expr, range: expr.sourceRange.lowerBound..<endUtf8)
             } else if source[index...].hasPrefix("--") {
                 index = source.index(index, offsetBy: 2)
-                expr = JSUnaryExpression(operatorStr: "--", prefix: false, argument: expr)
+                let endUtf8 = source.distance(from: source.startIndex, to: index)
+                expr = JSUnaryExpression(operatorStr: "--", prefix: false, argument: expr, range: expr.sourceRange.lowerBound..<endUtf8)
             } else if matchKeyword("as") {
                 _ = scanWord()
                 skipWhitespaceAndComments()
@@ -2158,6 +2343,7 @@ private struct JSParserImpl {
         }
 
         if matchKeyword("function") {
+            let startUtf8 = source.distance(from: source.startIndex, to: index)
             _ = scanWord()
             skipWhitespaceAndComments()
             var name: JSIdentifier? = nil
@@ -2181,10 +2367,12 @@ private struct JSParserImpl {
             if index < source.endIndex && source[index] == "{" {
                 body = try parseBlockStatement()
             }
-            return JSFunctionDeclaration(id: name, typeParameters: typeParameters, params: params, body: body, isAsync: false, returnType: returnType)
+            let endUtf8 = source.distance(from: source.startIndex, to: index)
+            return JSFunctionDeclaration(id: name, typeParameters: typeParameters, params: params, body: body, isAsync: false, returnType: returnType, range: startUtf8..<endUtf8)
         }
 
         if matchKeyword("async") {
+            let startUtf8 = source.distance(from: source.startIndex, to: index)
             let saved = index
             _ = scanWord()
             skipWhitespaceAndComments()
@@ -2212,7 +2400,8 @@ private struct JSParserImpl {
                 if index < source.endIndex && source[index] == "{" {
                     body = try parseBlockStatement()
                 }
-                return JSFunctionDeclaration(id: name, typeParameters: typeParameters, params: params, body: body, isAsync: true, returnType: returnType)
+                let endUtf8 = source.distance(from: source.startIndex, to: index)
+                return JSFunctionDeclaration(id: name, typeParameters: typeParameters, params: params, body: body, isAsync: true, returnType: returnType, range: startUtf8..<endUtf8)
             } else if index < source.endIndex && source[index] == "(" && isArrowFunctionAhead() {
                 let params = try parseParameterList()
                 skipWhitespaceAndComments()
@@ -2339,11 +2528,19 @@ private struct JSParserImpl {
         return JSIdentifier(name: word, range: wordStart..<wordEnd)
     }
 
-    private func makeArrowFunction(typeParameters: String? = nil, params: [JSNode], body: JSNode, isAsync: Bool = false, returnType: String? = nil) -> JSArrowFunctionExpression {
+    private func makeArrowFunction(typeParameters: String? = nil, params: [JSNode], body: JSNode, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) -> JSArrowFunctionExpression {
         if let innerArrow = body as? JSArrowFunctionExpression {
             innerArrow.isCurried = true
         }
-        return JSArrowFunctionExpression(typeParameters: typeParameters, params: params, body: body, isAsync: isAsync, returnType: returnType)
+        let arrowRange: Range<Int>
+        if range.count > 0 {
+            arrowRange = range
+        } else {
+            let start = params.first?.sourceRange.lowerBound ?? body.sourceRange.lowerBound
+            let end = body.sourceRange.upperBound
+            arrowRange = min(start, end)..<max(start, end)
+        }
+        return JSArrowFunctionExpression(typeParameters: typeParameters, params: params, body: body, isAsync: isAsync, returnType: returnType, range: arrowRange)
     }
 
     private mutating func parseStringLiteral() -> JSLiteral {
@@ -2391,13 +2588,29 @@ private struct JSParserImpl {
 
     private func isAtStatementStart(from idx: String.Index) -> Bool {
         var p = idx
-        while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
-            p = source.index(after: p)
+        while p < source.endIndex {
+            while p < source.endIndex && (source[p] == " " || source[p] == "\t" || source[p] == "\r" || source[p] == "\n") {
+                p = source.index(after: p)
+            }
+            if p < source.endIndex && source[p...].hasPrefix("//") {
+                while p < source.endIndex && source[p] != "\n" {
+                    p = source.index(after: p)
+                }
+                continue
+            }
+            if p < source.endIndex && source[p...].hasPrefix("/*") {
+                p = source.index(p, offsetBy: 2)
+                while p < source.endIndex && !source[p...].hasPrefix("*/") {
+                    p = source.index(after: p)
+                }
+                if p < source.endIndex {
+                    p = source.index(p, offsetBy: 2)
+                }
+                continue
+            }
+            break
         }
         guard p < source.endIndex else { return true }
-        if source[p...].hasPrefix("//") || source[p...].hasPrefix("/*") {
-            return true
-        }
         let keywords = [
             "export", "import", "function", "type", "interface", "const", "let", "var",
             "class", "default", "return", "if", "while", "for", "switch", "throw",
