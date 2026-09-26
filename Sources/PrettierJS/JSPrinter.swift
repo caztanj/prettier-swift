@@ -39,7 +39,13 @@ public func printJSNode(
             }
             if let initVal = decl.initValue {
                 let initDoc = printJSNode(initVal, options: options, sourceText: sourceText)
-                declDocs.append(.concat([idDoc, typeDoc, .text(" = "), initDoc]))
+                if initVal is JSConditionalExpression {
+                    let flat = Doc.concat([idDoc, typeDoc, .text(" = "), initDoc])
+                    let broken = Doc.concat([idDoc, typeDoc, .text(" ="), .indent(.concat([.line, initDoc]))])
+                    declDocs.append(conditionalGroup([flat, broken]))
+                } else {
+                    declDocs.append(.concat([idDoc, typeDoc, .text(" = "), initDoc]))
+                }
             } else {
                 declDocs.append(.concat([idDoc, typeDoc]))
             }
@@ -52,21 +58,69 @@ public func printJSNode(
         var prefix = fn.isAsync ? "async function" : "function"
         if let id = fn.id {
             prefix += " \(id.name)"
+        } else if fn.typeParameters == nil || fn.typeParameters!.isEmpty {
+            prefix += " "
+        }
+        let typeParamsDoc: Doc
+        if let typeParams = fn.typeParameters, !typeParams.isEmpty {
+            typeParamsDoc = printTypeArgumentsDoc(typeParams)
+        } else {
+            typeParamsDoc = .empty
         }
         let paramDocs = fn.params.map { printJSNode($0, options: options, sourceText: sourceText) }
-        let paramsGroup = join(separator: .text(", "), paramDocs)
         var returnTypeDoc: Doc = .empty
         if let returnType = fn.returnType, !returnType.isEmpty {
             returnTypeDoc = .text(": \(returnType)")
         }
-        let bodyDoc = printJSNode(fn.body, options: options, sourceText: sourceText)
-        innerDoc = .concat([.text("\(prefix)("), .concat(paramsGroup), .text(")"), returnTypeDoc, .text(" "), bodyDoc])
+
+        let paramsDoc: Doc
+        if fn.params.isEmpty {
+            paramsDoc = .text("()")
+        } else if fn.params.count == 1, let firstParamStr = (fn.params.first as? JSIdentifier)?.name, firstParamStr.contains("\n") {
+            paramsDoc = .concat([.text("("), .text(firstParamStr), .text(")")])
+        } else {
+            let joinedMulti = join(separator: .concat([.text(","), .line]), paramDocs)
+            let hasRest = fn.params.last.map { ($0 as? JSIdentifier)?.name.hasPrefix("...") ?? false } ?? false
+            let trailingCommaDoc = hasRest ? Doc.empty : .ifBreak(breakContents: .text(","), flatContents: .empty)
+            paramsDoc = group(.concat([
+                .text("("),
+                .indent(.concat([.softline, .concat(joinedMulti), trailingCommaDoc])),
+                .softline,
+                .text(")")
+            ]))
+        }
+
+        if let body = fn.body {
+            let bodyDoc = printJSNode(body, options: options, sourceText: sourceText)
+            innerDoc = .concat([.text(prefix), typeParamsDoc, paramsDoc, returnTypeDoc, .text(" "), bodyDoc])
+        } else {
+            let semiDoc: Doc = options.semi ? .text(";") : .empty
+            innerDoc = .concat([.text(prefix), typeParamsDoc, paramsDoc, returnTypeDoc, semiDoc])
+        }
 
     case let arrow as JSArrowFunctionExpression:
+        let typeParamsDoc: Doc
+        if let typeParams = arrow.typeParameters, !typeParams.isEmpty {
+            typeParamsDoc = printTypeArgumentsDoc(typeParams)
+        } else {
+            typeParamsDoc = .empty
+        }
         let paramDocs = arrow.params.map { printJSNode($0, options: options, sourceText: sourceText) }
-        let paramsGroup = join(separator: .text(", "), paramDocs)
         let asyncPrefix = arrow.isAsync ? "async " : ""
-        let paramsDoc = Doc.concat([.text("\(asyncPrefix)("), .concat(paramsGroup), .text(")")])
+        let paramsDoc: Doc
+        if arrow.params.isEmpty {
+            paramsDoc = .text("\(asyncPrefix)()")
+        } else {
+            let joinedMulti = join(separator: .concat([.text(","), .line]), paramDocs)
+            let hasRest = arrow.params.last.map { ($0 as? JSIdentifier)?.name.hasPrefix("...") ?? false } ?? false
+            let trailingCommaDoc = hasRest ? Doc.empty : .ifBreak(breakContents: .text(","), flatContents: .empty)
+            paramsDoc = group(.concat([
+                .text("\(asyncPrefix)("),
+                .indent(.concat([.softline, .concat(joinedMulti), trailingCommaDoc])),
+                .softline,
+                .text(")")
+            ]))
+        }
         var returnTypeDoc: Doc = .empty
         if let returnType = arrow.returnType, !returnType.isEmpty {
             returnTypeDoc = .text(": \(returnType)")
@@ -76,7 +130,19 @@ public func printJSNode(
         if arrow.body is JSObjectExpression {
             bodyDoc = .concat([.text("("), bodyDoc, .text(")")])
         }
-        innerDoc = .concat([paramsDoc, returnTypeDoc, .text(" => "), bodyDoc])
+        if let innerArrow = arrow.body as? JSArrowFunctionExpression {
+            if innerArrow.body is JSBlockStatement {
+                innerDoc = .concat([typeParamsDoc, paramsDoc, returnTypeDoc, .text(" => "), bodyDoc])
+            } else {
+                innerDoc = .concat([typeParamsDoc, paramsDoc, returnTypeDoc, .text(" =>"), .indent(.concat([.hardline, bodyDoc]))])
+            }
+        } else if arrow.isCurried && !(arrow.body is JSBlockStatement) {
+            innerDoc = .concat([typeParamsDoc, paramsDoc, returnTypeDoc, .text(" =>"), .indent(.concat([.hardline, bodyDoc]))])
+        } else if arrow.body is JSBlockStatement {
+            innerDoc = .concat([typeParamsDoc, paramsDoc, returnTypeDoc, .text(" => "), bodyDoc])
+        } else {
+            innerDoc = group(.concat([typeParamsDoc, paramsDoc, returnTypeDoc, .text(" =>"), .indent(.concat([.line, bodyDoc]))]))
+        }
 
     case let block as JSBlockStatement:
         if block.body.isEmpty {
@@ -94,16 +160,50 @@ public func printJSNode(
     case let ret as JSReturnStatement:
         let semiDoc: Doc = options.semi ? .text(";") : .empty
         if let arg = ret.argument {
-            let argDoc = printJSNode(arg, options: options, sourceText: sourceText)
-            innerDoc = .concat([.text("return "), argDoc, semiDoc])
+            if let paren = arg as? JSParenthesizedExpression, let bin = paren.expression as? JSBinaryExpression {
+                let binDoc = printBinaryExpressionFlat(bin, options: options, sourceText: sourceText)
+                let flatDoc = Doc.concat([.text("return ("), binDoc, .text(")"), semiDoc])
+                let breakDoc = Doc.concat([
+                    .text("return ("),
+                    .indent(.concat([.line, binDoc])),
+                    .line,
+                    .text(")"),
+                    semiDoc
+                ])
+                innerDoc = conditionalGroup([flatDoc, breakDoc])
+            } else if let bin = arg as? JSBinaryExpression {
+                let flatDoc = Doc.concat([.text("return "), printJSNode(bin, options: options, sourceText: sourceText), semiDoc])
+                let breakDoc = Doc.concat([
+                    .text("return ("),
+                    .indent(.concat([.line, printBinaryExpressionFlat(bin, options: options, sourceText: sourceText)])),
+                    .line,
+                    .text(")"),
+                    semiDoc
+                ])
+                innerDoc = conditionalGroup([flatDoc, breakDoc])
+            } else {
+                let argDoc = printJSNode(arg, options: options, sourceText: sourceText)
+                innerDoc = .concat([.text("return "), argDoc, semiDoc])
+            }
         } else {
             innerDoc = .concat([.text("return"), semiDoc])
         }
 
     case let ifStmt as JSIfStatement:
-        let testDoc = printJSNode(ifStmt.test, options: options, sourceText: sourceText)
+        let testDoc: Doc
+        if let bin = ifStmt.test as? JSBinaryExpression {
+            testDoc = printBinaryExpressionFlat(bin, options: options, sourceText: sourceText)
+        } else {
+            testDoc = printJSNode(ifStmt.test, options: options, sourceText: sourceText)
+        }
         let consDoc = printJSNode(ifStmt.consequent, options: options, sourceText: sourceText)
-        var parts: [Doc] = [.text("if ("), testDoc, .text(") "), consDoc]
+        let headerDoc = group(.concat([
+            .text("if ("),
+            .indent(.concat([.softline, testDoc])),
+            .softline,
+            .text(") ")
+        ]))
+        var parts: [Doc] = [headerDoc, consDoc]
         if let alt = ifStmt.alternate {
             let altDoc = printJSNode(alt, options: options, sourceText: sourceText)
             parts.append(.text(" else "))
@@ -117,21 +217,47 @@ public func printJSNode(
         innerDoc = .concat([exprDoc, semiDoc])
 
     case let bin as JSBinaryExpression:
-        let leftDoc: Doc
-        if shouldParenthesizeBinaryOperand(bin.left, parentOp: bin.operatorStr, isRight: false) {
-            leftDoc = .concat([.text("("), printJSNode(bin.left, options: options, sourceText: sourceText), .text(")")])
-        } else {
-            leftDoc = printJSNode(bin.left, options: options, sourceText: sourceText)
+        let isAssignment = bin.operatorStr.hasSuffix("=") && bin.operatorStr != "==" && bin.operatorStr != "===" && bin.operatorStr != "!=" && bin.operatorStr != "!==" && bin.operatorStr != "<=" && bin.operatorStr != ">="
+        if isAssignment {
+            let leftDoc = printJSNode(bin.left, options: options, sourceText: sourceText)
+            let rightDoc = printJSNode(bin.right, options: options, sourceText: sourceText)
+            innerDoc = group(.concat([leftDoc, .text(" \(bin.operatorStr)"), .indent(.concat([.line, rightDoc]))]))
+            break
         }
 
-        let rightDoc: Doc
-        if shouldParenthesizeBinaryOperand(bin.right, parentOp: bin.operatorStr, isRight: true) {
-            rightDoc = .concat([.text("("), printJSNode(bin.right, options: options, sourceText: sourceText), .text(")")])
-        } else {
-            rightDoc = printJSNode(bin.right, options: options, sourceText: sourceText)
+        var operands: [JSNode] = []
+        var curr: JSNode = bin
+        while let b = curr as? JSBinaryExpression, b.operatorStr == bin.operatorStr {
+            operands.insert(b.right, at: 0)
+            curr = b.left
+        }
+        operands.insert(curr, at: 0)
+
+        let firstNode = operands[0]
+        let firstNeedParen = shouldParenthesizeBinaryOperand(firstNode, parentOp: bin.operatorStr, isRight: false)
+        let firstNodeDoc = printJSNode(firstNode, options: options, sourceText: sourceText)
+        let firstDoc = firstNeedParen ? .concat([.text("("), firstNodeDoc, .text(")")]) : firstNodeDoc
+
+        var restParts: [Doc] = []
+        for i in 1..<operands.count {
+            let opNode = operands[i]
+            let needParen = shouldParenthesizeBinaryOperand(opNode, parentOp: bin.operatorStr, isRight: true)
+            let nodeDoc = printJSNode(opNode, options: options, sourceText: sourceText)
+            let wrappedDoc = needParen ? .concat([.text("("), nodeDoc, .text(")")]) : nodeDoc
+
+            let isEqualityComparison = bin.operatorStr == "===" || bin.operatorStr == "!==" || bin.operatorStr == "==" || bin.operatorStr == "!="
+            let shouldInlineOperand = isEqualityComparison && (opNode is JSLiteral || (opNode as? JSIdentifier)?.name == "undefined" || (opNode as? JSIdentifier)?.name == "null")
+            if shouldInlineOperand {
+                restParts.append(.text(" \(bin.operatorStr) "))
+                restParts.append(wrappedDoc)
+            } else {
+                restParts.append(.text(" \(bin.operatorStr)"))
+                restParts.append(.line)
+                restParts.append(wrappedDoc)
+            }
         }
 
-        innerDoc = .concat([leftDoc, .text(" \(bin.operatorStr) "), rightDoc])
+        innerDoc = group(.concat([firstDoc, .indent(.concat(restParts))]))
 
     case let un as JSUnaryExpression:
         let argDoc: Doc
@@ -147,6 +273,54 @@ public func printJSNode(
         }
 
     case let call as JSCallExpression:
+        if let member = call.callee as? JSMemberExpression, !member.computed, member.object is JSCallExpression {
+            var chain: [(member: JSMemberExpression, typeArgs: String?, args: [JSNode])] = []
+            var currentCall: JSCallExpression? = call
+            var baseNode: JSNode = call
+
+            while let c = currentCall, let m = c.callee as? JSMemberExpression, !m.computed {
+                chain.append((member: m, typeArgs: c.typeArguments, args: c.arguments))
+                if let nextCall = m.object as? JSCallExpression {
+                    currentCall = nextCall
+                } else {
+                    baseNode = m.object
+                    currentCall = nil
+                }
+            }
+
+            if chain.count >= 3 {
+                chain.reverse()
+                let baseDoc = printJSNode(baseNode, options: options, sourceText: sourceText)
+
+                func formatChainItem(_ item: (member: JSMemberExpression, typeArgs: String?, args: [JSNode])) -> Doc {
+                    let propDoc = printJSNode(item.member.property, options: options, sourceText: sourceText)
+                    let typeArgsDoc = (item.typeArgs != nil && !item.typeArgs!.isEmpty) ? printTypeArgumentsDoc(item.typeArgs!) : .empty
+                    let argDocs = item.args.map { printJSNode($0, options: options, sourceText: sourceText) }
+                    let argsDoc: Doc
+                    if item.args.isEmpty {
+                        argsDoc = .text("()")
+                    } else {
+                        let joined = join(separator: .text(", "), argDocs)
+                        argsDoc = .concat([.text("("), .concat(joined), .text(")")])
+                    }
+                    return Doc.concat([.text("."), propDoc, typeArgsDoc, argsDoc])
+                }
+
+                let flatItems = [baseDoc] + chain.map { formatChainItem($0) }
+                let flatDoc = Doc.concat(flatItems)
+
+                var breakItems: [Doc] = []
+                for item in chain {
+                    breakItems.append(.line)
+                    breakItems.append(formatChainItem(item))
+                }
+                let breakDoc = Doc.concat([baseDoc, .indent(.concat(breakItems))])
+
+                innerDoc = conditionalGroup([flatDoc, breakDoc])
+                break
+            }
+        }
+
         let calleeDoc = printJSNode(call.callee, options: options, sourceText: sourceText)
         let typeArgsDoc: Doc
         if let typeArgs = call.typeArguments, !typeArgs.isEmpty {
@@ -160,33 +334,20 @@ public func printJSNode(
             let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
             if shouldHugCallArguments(call.arguments) {
                 let huggedArgs = join(separator: .text(", "), argDocs)
-                let huggedDoc = Doc.concat([
+                innerDoc = Doc.concat([
                     calleeDoc,
                     typeArgsDoc,
                     .text("("),
                     .concat(huggedArgs),
                     .text(")")
                 ])
-                let brokenArgs = join(separator: .concat([.text(","), .line]), argDocs)
-                let brokenDoc = Doc.group(
-                    contents: .concat([
-                        calleeDoc,
-                        typeArgsDoc,
-                        .text("("),
-                        .indent(.concat([.line, .concat(brokenArgs)])),
-                        .line,
-                        .text(")")
-                    ]),
-                    shouldBreak: true
-                )
-                innerDoc = conditionalGroup([huggedDoc, brokenDoc])
             } else {
                 let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
                 innerDoc = group(.concat([
                     calleeDoc,
                     typeArgsDoc,
                     .text("("),
-                    .indent(.concat([.softline, .concat(argsBody)])),
+                    .indent(.concat([.softline, .concat(argsBody), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
                     .softline,
                     .text(")")
                 ]))
@@ -206,23 +367,36 @@ public func printJSNode(
         if obj.properties.isEmpty {
             innerDoc = .text("{}")
         } else {
-            let propDocs = obj.properties.map { prop -> Doc in
-                let keyDoc = printJSNode(prop.key, options: options, sourceText: sourceText)
-                if prop.shorthand {
-                    return keyDoc
-                } else {
-                    let valDoc = printJSNode(prop.value, options: options, sourceText: sourceText)
-                    return .concat([keyDoc, .text(": "), valDoc])
+            var parts: [Doc] = []
+            var hasAnyBlankLine = false
+            for i in 0..<obj.properties.count {
+                let current = obj.properties[i]
+                parts.append(printJSNode(current, options: options, sourceText: sourceText))
+                if i < obj.properties.count - 1 {
+                    let next = obj.properties[i + 1]
+                    parts.append(.text(","))
+                    if hasBlankLineBetween(current: current, next: next, in: sourceText) {
+                        hasAnyBlankLine = true
+                        parts.append(.concat([.line, .hardline]))
+                    } else {
+                        parts.append(.line)
+                    }
                 }
             }
-            let joined = join(separator: .concat([.text(","), .line]), propDocs)
             let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
+            let trailingCommaDoc = Doc.ifBreak(breakContents: .text(","), flatContents: .empty)
+            let shouldBreak = hasAnyBlankLine || (obj.properties.count > 1 && obj.sourceRange.count > 0 && {
+                guard obj.sourceRange.lowerBound < sourceText.count && obj.sourceRange.upperBound <= sourceText.count else { return false }
+                let startIdx = sourceText.index(sourceText.startIndex, offsetBy: obj.sourceRange.lowerBound)
+                let endIdx = sourceText.index(sourceText.startIndex, offsetBy: obj.sourceRange.upperBound)
+                return sourceText[startIdx..<endIdx].contains("\n")
+            }())
             innerDoc = group(.concat([
                 .text("{"),
-                .indent(.concat([lineDoc, .concat(joined)])),
+                .indent(.concat([lineDoc, .concat(parts), trailingCommaDoc])),
                 lineDoc,
                 .text("}")
-            ]))
+            ]), shouldBreak: shouldBreak)
         }
 
     case let arr as JSArrayExpression:
@@ -231,9 +405,10 @@ public func printJSNode(
         } else {
             let elemDocs = arr.elements.map { printJSNode($0, options: options, sourceText: sourceText) }
             let joined = join(separator: .concat([.text(","), .line]), elemDocs)
+            let trailingCommaDoc = Doc.ifBreak(breakContents: .text(","), flatContents: .empty)
             innerDoc = group(.concat([
                 .text("["),
-                .indent(.concat([.softline, .concat(joined)])),
+                .indent(.concat([.softline, .concat(joined), trailingCommaDoc])),
                 .softline,
                 .text("]")
             ]))
@@ -245,18 +420,69 @@ public func printJSNode(
     case let lit as JSLiteral:
         if lit.isString {
             if options.singleQuote {
-                let escaped = lit.value.replacingOccurrences(of: "'", with: "\\'")
-                innerDoc = .text("'\(escaped)'")
+                if lit.value.contains("'") && !lit.value.contains("\"") {
+                    let escaped = lit.value.replacingOccurrences(of: "\"", with: "\\\"")
+                    innerDoc = .text("\"\(escaped)\"")
+                } else {
+                    let escaped = lit.value.replacingOccurrences(of: "'", with: "\\'")
+                    innerDoc = .text("'\(escaped)'")
+                }
             } else {
-                let escaped = lit.value.replacingOccurrences(of: "\"", with: "\\\"")
-                innerDoc = .text("\"\(escaped)\"")
+                if lit.value.contains("\"") && !lit.value.contains("'") {
+                    let escaped = lit.value.replacingOccurrences(of: "'", with: "\\'")
+                    innerDoc = .text("'\(escaped)'")
+                } else {
+                    let escaped = lit.value.replacingOccurrences(of: "\"", with: "\\\"")
+                    innerDoc = .text("\"\(escaped)\"")
+                }
             }
         } else {
             innerDoc = .text(lit.raw)
         }
 
     case let tmpl as JSTemplateLiteral:
-        innerDoc = .text("`\(tmpl.quasis.joined(separator: ""))`")
+        if tmpl.expressions.isEmpty {
+            innerDoc = .text("`\(tmpl.quasis.first ?? "")`")
+        } else {
+            var parts: [Doc] = [.text("`")]
+            for (idx, expr) in tmpl.expressions.enumerated() {
+                if idx < tmpl.quasis.count {
+                    parts.append(.text(tmpl.quasis[idx]))
+                }
+                let exprDoc = printJSNode(expr, options: options, sourceText: sourceText)
+                let isMultilineInSource: Bool = {
+                    guard expr.sourceRange.lowerBound > 0, expr.sourceRange.lowerBound <= sourceText.count else { return false }
+                    let exprStart = sourceText.index(sourceText.startIndex, offsetBy: expr.sourceRange.lowerBound)
+                    var cur = exprStart
+                    while cur > sourceText.startIndex {
+                        cur = sourceText.index(before: cur)
+                        if sourceText[cur] == "\n" {
+                            return true
+                        }
+                        if sourceText[cur] == "{" {
+                            break
+                        }
+                    }
+                    return false
+                }()
+
+                if isMultilineInSource {
+                    parts.append(.concat([
+                        .text("${"),
+                        .indent(.concat([.hardline, exprDoc])),
+                        .hardline,
+                        .text("}")
+                    ]))
+                } else {
+                    parts.append(.concat([.text("${"), exprDoc, .text("}")]))
+                }
+            }
+            if tmpl.quasis.count > tmpl.expressions.count {
+                parts.append(.text(tmpl.quasis[tmpl.expressions.count]))
+            }
+            parts.append(.text("`"))
+            innerDoc = .concat(parts)
+        }
 
     case let imp as JSImportDeclaration:
         var parts: [Doc] = [.text("import ")]
@@ -281,12 +507,15 @@ public func printJSNode(
                 }
                 return .text(s)
             }
-            let specGroup = join(separator: .text(", "), specDocs)
-            if options.bracketSpacing {
-                clauses.append(.concat([.text("{ "), .concat(specGroup), .text(" }")]))
-            } else {
-                clauses.append(.concat([.text("{"), .concat(specGroup), .text("}")]))
-            }
+            let joinedMulti = join(separator: .concat([.text(","), .line]), specDocs)
+            let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
+            let bracedDoc = group(.concat([
+                .text("{"),
+                .indent(.concat([lineDoc, .concat(joinedMulti), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
+                lineDoc,
+                .text("}")
+            ]))
+            clauses.append(bracedDoc)
         }
 
         let sourceDoc = printJSNode(imp.source, options: options, sourceText: sourceText)
@@ -298,7 +527,7 @@ public func printJSNode(
             let clauseDoc = join(separator: .text(", "), clauses)
             parts.append(.concat([.concat(clauseDoc), .text(" from "), sourceDoc, semiDoc]))
         }
-        innerDoc = .concat(parts)
+        innerDoc = group(.concat(parts))
 
     case let expNamed as JSExportNamedDeclaration:
         let semiDoc: Doc = options.semi ? .text(";") : .empty
@@ -315,18 +544,19 @@ public func printJSNode(
                     return .text("\(typePrefix)\(spec.local.name) as \(spec.exported.name)")
                 }
             }
-            let joined = join(separator: .text(", "), specDocs)
-            let bracedDoc: Doc
-            if options.bracketSpacing {
-                bracedDoc = .concat([.text("{ "), .concat(joined), .text(" }")])
-            } else {
-                bracedDoc = .concat([.text("{"), .concat(joined), .text("}")])
-            }
+            let joinedMulti = join(separator: .concat([.text(","), .line]), specDocs)
+            let lineDoc = options.bracketSpacing ? Doc.line : Doc.softline
+            let bracedDoc = group(.concat([
+                .text("{"),
+                .indent(.concat([lineDoc, .concat(joinedMulti), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
+                lineDoc,
+                .text("}")
+            ]))
             if let source = expNamed.source {
                 let sourceDoc = printJSNode(source, options: options, sourceText: sourceText)
-                innerDoc = .concat([.text(prefix), bracedDoc, .text(" from "), sourceDoc, semiDoc])
+                innerDoc = group(.concat([.text(prefix), bracedDoc, .text(" from "), sourceDoc, semiDoc]))
             } else {
-                innerDoc = .concat([.text(prefix), bracedDoc, semiDoc])
+                innerDoc = group(.concat([.text(prefix), bracedDoc, semiDoc]))
             }
         } else {
             innerDoc = .concat([.text("export"), semiDoc])
@@ -353,19 +583,29 @@ public func printJSNode(
 
     case let typeAlias as JSTypeAliasDeclaration:
         let semiDoc: Doc = options.semi ? .text(";") : .empty
-        let typeParams = typeAlias.typeParameters ?? ""
-        innerDoc = .concat([.text("type \(typeAlias.id.name)\(typeParams) = "), .text(typeAlias.typeAnnotation), semiDoc])
+        let typeParams = ensureTrailingCommaInMultilineDelimiters(typeAlias.typeParameters ?? "", isTypeParameters: true)
+        let prefix = "type \(typeAlias.id.name)\(typeParams) = "
+        let formattedType = formatTypeAnnotation(typeAlias.typeAnnotation, options: options, prefix: "export " + prefix)
+        innerDoc = .concat([.text(prefix), formattedType, semiDoc])
 
     case let interfaceDecl as JSInterfaceDeclaration:
-        let typeParams = interfaceDecl.typeParameters ?? ""
+        let typeParams = ensureTrailingCommaInMultilineDelimiters(interfaceDecl.typeParameters ?? "", isTypeParameters: true)
         let extendsPart = interfaceDecl.extendsClause != nil ? " extends \(interfaceDecl.extendsClause!)" : ""
-        let bodyDoc = interfaceDecl.body
-        innerDoc = .concat([.text("interface \(interfaceDecl.id.name)\(typeParams)\(extendsPart) "), .text(bodyDoc)])
+        let formattedBody = formatTypeMembersBody(interfaceDecl.body, options: options)
+        innerDoc = .concat([.text("interface \(interfaceDecl.id.name)\(typeParams)\(extendsPart) "), .text(formattedBody)])
 
     case let whileStmt as JSWhileStatement:
         let testDoc = printJSNode(whileStmt.test, options: options, sourceText: sourceText)
         let bodyDoc = printJSNode(whileStmt.body, options: options, sourceText: sourceText)
-        innerDoc = .concat([.text("while ("), testDoc, .text(") "), bodyDoc])
+        innerDoc = .concat([
+            group(.concat([
+                .text("while ("),
+                .indent(.concat([.softline, testDoc])),
+                .softline,
+                .text(") ")
+            ])),
+            bodyDoc
+        ])
 
     case let forStmt as JSForStatement:
         let bodyDoc = printJSNode(forStmt.body, options: options, sourceText: sourceText)
@@ -421,7 +661,7 @@ public func printJSNode(
                         calleeDoc,
                         typeArgsDoc,
                         .text("("),
-                        .indent(.concat([.line, .concat(brokenArgs)])),
+                        .indent(.concat([.line, .concat(brokenArgs), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
                         .line,
                         .text(")")
                     ]),
@@ -435,7 +675,7 @@ public func printJSNode(
                     calleeDoc,
                     typeArgsDoc,
                     .text("("),
-                    .indent(.concat([.softline, .concat(argsBody)])),
+                    .indent(.concat([.softline, .concat(argsBody), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
                     .softline,
                     .text(")")
                 ]))
@@ -446,6 +686,151 @@ public func printJSNode(
     case let awaitExpr as JSAwaitExpression:
         let argDoc = printJSNode(awaitExpr.argument, options: options, sourceText: sourceText)
         innerDoc = .concat([.text("await "), argDoc])
+
+    case let asExpr as JSTypeAssertionExpression:
+        let exprDoc = printJSNode(asExpr.expression, options: options, sourceText: sourceText)
+        var typeStr = asExpr.typeAnnotation.trimmingCharacters(in: .whitespacesAndNewlines)
+        if typeStr.hasPrefix("|") {
+            typeStr = typeStr.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if typeStr.contains("\n") {
+            let parts = typeStr.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            let filtered = parts.map { $0.hasPrefix("|") ? String($0.dropFirst()).trimmingCharacters(in: .whitespaces) : $0 }
+            let singleLine = filtered.joined(separator: " | ")
+            if singleLine.count <= options.printWidth {
+                typeStr = singleLine
+            }
+        }
+        if !options.singleQuote && !typeStr.contains("\"") && typeStr.contains("'") {
+            typeStr = typeStr.replacingOccurrences(of: "'", with: "\"")
+        }
+        if asExpr.expression is JSObjectExpression || asExpr.expression is JSTypeAssertionExpression {
+            innerDoc = .concat([exprDoc, .text(" as "), .text(typeStr)])
+        } else {
+            innerDoc = group(.concat([exprDoc, .text(" as"), .indent(.concat([.line, .text(typeStr)]))]))
+        }
+
+    case let paren as JSParenthesizedExpression:
+        if let bin = paren.expression as? JSBinaryExpression {
+            innerDoc = .concat([
+                .text("("),
+                .indent(printBinaryExpressionFlat(bin, options: options, sourceText: sourceText)),
+                .text(")")
+            ])
+        } else {
+            let exprDoc = printJSNode(paren.expression, options: options, sourceText: sourceText)
+            innerDoc = .concat([.text("("), exprDoc, .text(")")])
+        }
+
+    case let declGlobal as JSDeclareGlobalStatement:
+        let bodyDoc = printJSNode(declGlobal.body, options: options, sourceText: sourceText)
+        innerDoc = .concat([.text("declare global "), bodyDoc])
+
+    case let switchStmt as JSSwitchStatement:
+        let discDoc = printJSNode(switchStmt.discriminant, options: options, sourceText: sourceText)
+        var caseDocs: [Doc] = []
+        for switchCase in switchStmt.cases {
+            let header: Doc
+            if let test = switchCase.test {
+                header = .concat([.text("case "), printJSNode(test, options: options, sourceText: sourceText), .text(":")])
+            } else {
+                header = .text("default:")
+            }
+            if switchCase.consequent.isEmpty {
+                caseDocs.append(header)
+            } else if switchCase.consequent.count == 1, let block = switchCase.consequent.first as? JSBlockStatement {
+                let blockDoc = printJSNode(block, options: options, sourceText: sourceText)
+                caseDocs.append(.concat([header, .text(" "), blockDoc]))
+            } else {
+                let stmtsDocs = printStatementSequence(switchCase.consequent, options: options, sourceText: sourceText)
+                caseDocs.append(.concat([
+                    header,
+                    .indent(.concat([.hardline, .concat(stmtsDocs)]))
+                ]))
+            }
+        }
+        let joinedCases = join(separator: .hardline, caseDocs)
+        innerDoc = .concat([
+            .text("switch ("),
+            discDoc,
+            .text(") {"),
+            caseDocs.isEmpty ? .empty : .indent(.concat([.hardline, .concat(joinedCases)])),
+            .hardline,
+            .text("}")
+        ])
+
+    case let brk as JSBreakStatement:
+        let semiDoc: Doc = options.semi ? .text(";") : .empty
+        if let label = brk.label {
+            innerDoc = .concat([.text("break \(label.name)"), semiDoc])
+        } else {
+            innerDoc = .concat([.text("break"), semiDoc])
+        }
+
+    case let cont as JSContinueStatement:
+        let semiDoc: Doc = options.semi ? .text(";") : .empty
+        if let label = cont.label {
+            innerDoc = .concat([.text("continue \(label.name)"), semiDoc])
+        } else {
+            innerDoc = .concat([.text("continue"), semiDoc])
+        }
+
+    case let cond as JSConditionalExpression:
+        let testDoc = printJSNode(cond.test, options: options, sourceText: sourceText)
+        let consequentDoc = printJSNode(cond.consequent, options: options, sourceText: sourceText)
+        let alternateDoc = printJSNode(cond.alternate, options: options, sourceText: sourceText)
+        let flatDoc = Doc.concat([
+            testDoc,
+            .text(" ? "),
+            consequentDoc,
+            .text(" : "),
+            alternateDoc
+        ])
+        let breakDoc = Doc.concat([
+            testDoc,
+            .indent(.concat([
+                .line,
+                .text("? "),
+                consequentDoc,
+                .line,
+                .text(": "),
+                alternateDoc
+            ]))
+        ])
+        innerDoc = conditionalGroup([flatDoc, breakDoc])
+
+    case let regex as JSRegExpLiteral:
+        innerDoc = .text(regex.raw)
+
+    case let prop as JSProperty:
+        if let keyId = prop.key as? JSIdentifier, keyId.name == "..." {
+            let valDoc = printJSNode(prop.value, options: options, sourceText: sourceText)
+            innerDoc = .concat([.text("..."), valDoc])
+            break
+        }
+        let rawKeyDoc = printJSNode(prop.key, options: options, sourceText: sourceText)
+        let keyDoc = prop.computed ? Doc.concat([.text("["), rawKeyDoc, .text("]")]) : rawKeyDoc
+
+        if prop.method, let fn = prop.value as? JSFunctionDeclaration {
+            let typeParamsDoc: Doc
+            if let typeParams = fn.typeParameters, !typeParams.isEmpty {
+                typeParamsDoc = printTypeArgumentsDoc(typeParams)
+            } else {
+                typeParamsDoc = .empty
+            }
+            let paramDocs = fn.params.map { printJSNode($0, options: options, sourceText: sourceText) }
+            let joinedParams = join(separator: .text(", "), paramDocs)
+            let paramsDoc = Doc.concat([.text("("), .concat(joinedParams), .text(")")])
+            let returnTypeDoc = fn.returnType != nil ? Doc.text(": \(fn.returnType!)") : .empty
+            let bodyDoc = fn.body != nil ? printJSNode(fn.body!, options: options, sourceText: sourceText) : .empty
+            let asyncPrefix = fn.isAsync ? "async " : ""
+            innerDoc = .concat([.text(asyncPrefix), keyDoc, typeParamsDoc, paramsDoc, returnTypeDoc, .text(" "), bodyDoc])
+        } else if prop.shorthand {
+            innerDoc = keyDoc
+        } else {
+            let valDoc = printJSNode(prop.value, options: options, sourceText: sourceText)
+            innerDoc = .concat([keyDoc, .text(": "), valDoc])
+        }
 
     default:
         innerDoc = .empty
@@ -494,6 +879,42 @@ private func shouldParenthesizeBinaryOperand(_ child: JSNode, parentOp: String, 
     return false
 }
 
+private func printBinaryExpressionFlat(_ bin: JSBinaryExpression, options: PrintOptions, sourceText: String) -> Doc {
+    var operands: [JSNode] = []
+    var curr: JSNode = bin
+    while let b = curr as? JSBinaryExpression, b.operatorStr == bin.operatorStr {
+        operands.insert(b.right, at: 0)
+        curr = b.left
+    }
+    operands.insert(curr, at: 0)
+
+    let firstNode = operands[0]
+    let firstNeedParen = shouldParenthesizeBinaryOperand(firstNode, parentOp: bin.operatorStr, isRight: false)
+    let firstNodeDoc = printJSNode(firstNode, options: options, sourceText: sourceText)
+    let firstDoc = firstNeedParen ? .concat([.text("("), firstNodeDoc, .text(")")]) : firstNodeDoc
+
+    var restParts: [Doc] = []
+    for i in 1..<operands.count {
+        let opNode = operands[i]
+        let needParen = shouldParenthesizeBinaryOperand(opNode, parentOp: bin.operatorStr, isRight: true)
+        let nodeDoc = printJSNode(opNode, options: options, sourceText: sourceText)
+        let wrappedDoc = needParen ? .concat([.text("("), nodeDoc, .text(")")]) : nodeDoc
+
+        let isEqualityComparison = bin.operatorStr == "===" || bin.operatorStr == "!==" || bin.operatorStr == "==" || bin.operatorStr == "!="
+        let shouldInlineOperand = isEqualityComparison && (opNode is JSLiteral || (opNode as? JSIdentifier)?.name == "undefined" || (opNode as? JSIdentifier)?.name == "null")
+        if shouldInlineOperand {
+            restParts.append(.text(" \(bin.operatorStr) "))
+            restParts.append(wrappedDoc)
+        } else {
+            restParts.append(.text(" \(bin.operatorStr)"))
+            restParts.append(.line)
+            restParts.append(wrappedDoc)
+        }
+    }
+
+    return group(.concat([firstDoc] + restParts))
+}
+
 private func hasBlankLineBetween(current: JSNode, next: JSNode, in sourceText: String) -> Bool {
     guard !sourceText.isEmpty else { return false }
 
@@ -512,24 +933,21 @@ private func hasBlankLineBetween(current: JSNode, next: JSNode, in sourceText: S
     }
 
     guard currentEnd > 0 && nextStart >= currentEnd else { return false }
+    guard currentEnd <= sourceText.count && nextStart <= sourceText.count else { return false }
 
-    let utf8 = sourceText.utf8
-    guard currentEnd <= utf8.count && nextStart <= utf8.count else { return false }
-
-    let startIdx = utf8.index(utf8.startIndex, offsetBy: currentEnd)
-    let endIdx = utf8.index(utf8.startIndex, offsetBy: nextStart)
+    let startIdx = sourceText.index(sourceText.startIndex, offsetBy: currentEnd)
+    let endIdx = sourceText.index(sourceText.startIndex, offsetBy: nextStart)
 
     var newlineCount = 0
     var idx = startIdx
     while idx < endIdx {
-        let byte = utf8[idx]
-        if byte == 0x0A { // '\n'
+        if sourceText[idx] == "\n" {
             newlineCount += 1
             if newlineCount >= 2 {
                 return true
             }
         }
-        idx = utf8.index(after: idx)
+        idx = sourceText.index(after: idx)
     }
 
     return false
@@ -568,14 +986,14 @@ private func printTypeArgumentsDoc(_ typeArgs: String) -> Doc {
     }
     let inner = typeArgs.dropFirst().dropLast()
     let parts = splitTypeArguments(String(inner))
-    guard parts.count > 1 else {
-        return .text(typeArgs)
+    guard !parts.isEmpty else {
+        return .text("<>")
     }
     let typeDocs = parts.map { Doc.text($0) }
     let typeBody = join(separator: .concat([.text(","), .line]), typeDocs)
     return group(.concat([
         .text("<"),
-        .indent(.concat([.softline, .concat(typeBody)])),
+        .indent(.concat([.softline, .concat(typeBody), .ifBreak(breakContents: .text(","), flatContents: .empty)])),
         .softline,
         .text(">")
     ]))
@@ -630,7 +1048,8 @@ private func shouldHugCallArguments(_ args: [JSNode]) -> Bool {
     if args.count == 1 {
         return isHuggableArg(args[0])
     }
-    if isHuggableArg(args.last!) || isHuggableArg(args.first!) {
+    let huggableCount = args.filter { isHuggableArg($0) }.count
+    if huggableCount == 1 && isHuggableArg(args.last!) {
         return true
     }
     return false
@@ -643,5 +1062,233 @@ private func isHuggableArg(_ node: JSNode) -> Bool {
     if node is JSFunctionDeclaration {
         return true
     }
+    if node is JSObjectExpression || node is JSArrayExpression {
+        return true
+    }
     return false
+}
+
+private func ensureTrailingCommaInMultilineDelimiters(_ text: String, isTypeParameters: Bool = false) -> String {
+    guard text.contains("\n") else { return text }
+    var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    for i in 0..<lines.count {
+        let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+        var shouldAddComma = false
+        if trimmed.hasPrefix(")") || trimmed.hasPrefix("):") || trimmed.hasPrefix(")=>") || trimmed.hasPrefix(") =>") {
+            shouldAddComma = true
+        } else if trimmed.hasPrefix(">(") || trimmed.hasPrefix("> =") || trimmed.hasPrefix(">{") || trimmed.hasPrefix("> {") {
+            shouldAddComma = true
+        } else if trimmed == ">" {
+            var nextIdx = i + 1
+            while nextIdx < lines.count && lines[nextIdx].trimmingCharacters(in: .whitespaces).isEmpty {
+                nextIdx += 1
+            }
+            if nextIdx < lines.count {
+                let nextTrimmed = lines[nextIdx].trimmingCharacters(in: .whitespaces)
+                if nextTrimmed.hasPrefix("{") || nextTrimmed.hasPrefix("=") || nextTrimmed.hasPrefix("(") {
+                    shouldAddComma = true
+                }
+            } else if isTypeParameters {
+                shouldAddComma = true
+            }
+        }
+        if shouldAddComma {
+            var prevIdx = i - 1
+            while prevIdx >= 0 && lines[prevIdx].trimmingCharacters(in: .whitespaces).isEmpty {
+                prevIdx -= 1
+            }
+            if prevIdx >= 0 {
+                let prevLine = lines[prevIdx]
+                let prevTrimmed = prevLine.trimmingCharacters(in: .whitespaces)
+                if !prevTrimmed.isEmpty &&
+                   !prevTrimmed.hasSuffix(",") &&
+                   !prevTrimmed.hasSuffix("(") &&
+                   !prevTrimmed.hasSuffix("<") &&
+                   !prevTrimmed.hasSuffix("{") &&
+                   !prevTrimmed.hasSuffix(";") {
+                    if let commentRange = prevLine.range(of: "//") {
+                        let codePart = prevLine[..<commentRange.lowerBound].trimmingCharacters(in: .whitespaces)
+                        let leadingSpaces = prevLine.prefix(while: { $0 == " " })
+                        let commentPart = prevLine[commentRange.lowerBound...]
+                        lines[prevIdx] = "\(leadingSpaces)\(codePart), \(commentPart)"
+                    } else {
+                        lines[prevIdx] = prevLine + ","
+                    }
+                }
+            }
+        }
+    }
+    return lines.joined(separator: "\n")
+}
+
+private func formatTypeMembersBody(_ raw: String, options: PrintOptions) -> String {
+    let rawWithCommas = ensureTrailingCommaInMultilineDelimiters(raw)
+    let trimmed = rawWithCommas.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("{") && trimmed.hasSuffix("}") else {
+        return rawWithCommas
+    }
+    let inner = trimmed.dropFirst().dropLast()
+    guard !inner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "{}"
+    }
+    if !inner.contains("\n") {
+        var cleaned = inner.trimmingCharacters(in: .whitespaces)
+        if options.semi && !cleaned.hasSuffix(";") {
+            cleaned.append(";")
+        } else if !options.semi && cleaned.hasSuffix(";") {
+            cleaned.removeLast()
+        }
+        let space = options.bracketSpacing ? " " : ""
+        return "{\(space)\(cleaned)\(space)}"
+    }
+    var lines = inner.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty {
+        lines.removeFirst()
+    }
+    while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+        lines.removeLast()
+    }
+    var formattedLines: [String] = []
+    var parenDepth = 0
+    var angleDepth = 0
+    var bracketDepth = 0
+
+    for i in 0..<lines.count {
+        let str = lines[i]
+        let trimmedLine = str.trimmingCharacters(in: .whitespaces)
+        if trimmedLine.isEmpty || trimmedLine.hasPrefix("//") || trimmedLine.hasPrefix("/*") || trimmedLine.hasPrefix("*") {
+            formattedLines.append(str)
+            continue
+        }
+
+        for ch in trimmedLine {
+            if ch == "(" { parenDepth += 1 }
+            else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if ch == "<" { angleDepth += 1 }
+            else if ch == ">" { angleDepth = max(0, angleDepth - 1) }
+            else if ch == "[" { bracketDepth += 1 }
+            else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+        }
+
+        var cleaned = str
+        let rtrimmed = cleaned.trimmingCharacters(in: .whitespaces)
+
+        if parenDepth > 0 || angleDepth > 0 || bracketDepth > 0 {
+            formattedLines.append(cleaned)
+            continue
+        }
+
+        var nextIsTernary = false
+        for j in (i + 1)..<lines.count {
+            let nextTrimmed = lines[j].trimmingCharacters(in: .whitespaces)
+            if !nextTrimmed.isEmpty {
+                if nextTrimmed.hasPrefix("?") || nextTrimmed.hasPrefix(":") {
+                    nextIsTernary = true
+                }
+                break
+            }
+        }
+        if nextIsTernary || rtrimmed.hasSuffix("?") || rtrimmed.hasSuffix(":") {
+            formattedLines.append(cleaned)
+            continue
+        }
+
+        if rtrimmed.hasSuffix(",") {
+            if let lastCommaIdx = cleaned.lastIndex(of: ",") {
+                cleaned.remove(at: lastCommaIdx)
+            }
+        }
+
+        let currentTrimmed = cleaned.trimmingCharacters(in: .whitespaces)
+        if options.semi && !currentTrimmed.hasSuffix(";") && !currentTrimmed.hasSuffix("{") {
+            cleaned.append(";")
+        } else if !options.semi && currentTrimmed.hasSuffix(";") {
+            if let lastSemiIdx = cleaned.lastIndex(of: ";") {
+                cleaned.remove(at: lastSemiIdx)
+            }
+        }
+        formattedLines.append(cleaned)
+    }
+    let firstLineIndent = formattedLines.first?.prefix(while: { $0 == " " }).count ?? 2
+    let closingIndent = String(repeating: " ", count: max(0, firstLineIndent - 2))
+    return "{\n" + formattedLines.joined(separator: "\n") + "\n\(closingIndent)}"
+}
+
+private func formatTypeAnnotation(_ raw: String, options: PrintOptions, prefix: String = "") -> Doc {
+    var text = ensureTrailingCommaInMultilineDelimiters(raw)
+
+    if text.contains("\n") {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var newLines: [String] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("| ") {
+                var unionItems = [String(trimmed.dropFirst(2))]
+                var j = i + 1
+                while j < lines.count {
+                    let nextTrimmed = lines[j].trimmingCharacters(in: .whitespaces)
+                    if nextTrimmed.hasPrefix("| ") {
+                        unionItems.append(String(nextTrimmed.dropFirst(2)))
+                        j += 1
+                    } else {
+                        break
+                    }
+                }
+                let joinedUnion = unionItems.joined(separator: " | ")
+                let leadingIndent = line.prefix(while: { $0 == " " })
+                let combined = "\(leadingIndent)\(joinedUnion)"
+                if combined.count <= options.printWidth {
+                    newLines.append(combined)
+                    i = j
+                    continue
+                }
+            }
+            newLines.append(line)
+            i += 1
+        }
+        text = newLines.joined(separator: "\n")
+    }
+
+    var searchStart = text.startIndex
+    while let openBrace = text[searchStart...].firstIndex(of: "{") {
+        let afterOpen = text.index(after: openBrace)
+        if afterOpen < text.endIndex {
+            var depth = 1
+            var p = afterOpen
+            var closeBrace: String.Index? = nil
+            while p < text.endIndex {
+                if text[p] == "{" { depth += 1 }
+                else if text[p] == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        closeBrace = p
+                        break
+                    }
+                }
+                p = text.index(after: p)
+            }
+            if let close = closeBrace {
+                let block = String(text[openBrace...close])
+                if block.contains("\n") {
+                    let formattedBlock = formatTypeMembersBody(block, options: options)
+                    text.replaceSubrange(openBrace...close, with: formattedBlock)
+                    searchStart = text.index(openBrace, offsetBy: formattedBlock.count, limitedBy: text.endIndex) ?? text.endIndex
+                    continue
+                }
+            }
+        }
+        searchStart = afterOpen
+    }
+
+    if !text.contains("\n") {
+        let lastPrefixLine = prefix.split(separator: "\n").last.map(String.init) ?? prefix
+        if (lastPrefixLine.count + text.count + (options.semi ? 1 : 0)) > options.printWidth {
+            return .concat([.indent(.concat([.line, .text(text)]))])
+        }
+        return .text(text)
+    }
+
+    return .text(text)
 }

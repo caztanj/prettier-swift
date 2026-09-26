@@ -23,6 +23,7 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+
     @Test("Format function declarations and blocks")
     func testFunctionDeclarations() throws {
         let input = """
@@ -440,7 +441,7 @@ struct JSPrinterTests {
         let formatted = try formatJS(input)
         let expected = """
         const isPending = useSelector<ReduxStore, boolean>(
-          (state) => state.someDeeplyNestedProperty.isPending
+          (state) => state.someDeeplyNestedProperty.isPending,
         );
 
         """
@@ -474,5 +475,74 @@ struct JSPrinterTests {
         #expect(plugin.canFormat(filePath: nil, parserName: "javascript"))
         #expect(plugin.canFormat(filePath: nil, parserName: "typescript"))
         #expect(!plugin.canFormat(filePath: "styles.css", parserName: nil))
+    }
+
+    @Test("Preserve blank line between object properties")
+    func testPreserveBlankLineBetweenObjectProperties() throws {
+        let input = """
+        const store = {
+          subscribe() {
+            return 1;
+          },
+
+          [observable]() {
+            return this;
+          },
+        };
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const store = {
+          subscribe() {
+            return 1;
+          },
+
+          [observable]() {
+            return this;
+          },
+        };
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Hug object in call expression and inline equality comparison with literal")
+    func testCallArgumentObjectHuggingAndEqualityInlining() throws {
+        let input = """
+        if (typeof reducer(undefined, {
+          type: ActionTypes.PROBE_UNKNOWN_ACTION(),
+        }) === "undefined") {
+          throw new Error("fail");
+        }
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        if (
+          typeof reducer(undefined, {
+            type: ActionTypes.PROBE_UNKNOWN_ACTION(),
+          }) === "undefined"
+        ) {
+          throw new Error("fail");
+        }
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Preserve multiline template literal expression")
+    func testMultilineTemplateLiteralExpression() throws {
+        let input = """
+        const msg = `When called with type ${
+          actionType ? `"${String(actionType)}"` : "(unknown type)"
+        }, error`;
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const msg = `When called with type ${
+          actionType ? `"${String(actionType)}"` : "(unknown type)"
+        }, error`;
+
+        """
+        #expect(formatted == expected)
     }
 }

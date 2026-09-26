@@ -62,13 +62,15 @@ public final class JSVariableDeclarator: JSNode, @unchecked Sendable {
 
 public final class JSFunctionDeclaration: JSNode, @unchecked Sendable {
     public var id: JSIdentifier?
+    public var typeParameters: String?
     public var params: [JSNode]
-    public var body: JSBlockStatement
+    public var body: JSBlockStatement?
     public var isAsync: Bool
     public var returnType: String?
 
-    public init(id: JSIdentifier?, params: [JSNode], body: JSBlockStatement, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) {
+    public init(id: JSIdentifier?, typeParameters: String? = nil, params: [JSNode], body: JSBlockStatement?, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) {
         self.id = id
+        self.typeParameters = typeParameters
         self.params = params
         self.body = body
         self.isAsync = isAsync
@@ -80,22 +82,26 @@ public final class JSFunctionDeclaration: JSNode, @unchecked Sendable {
         var list: [JSNode] = []
         if let id { list.append(id) }
         list.append(contentsOf: params)
-        list.append(body)
+        if let body { list.append(body) }
         return list
     }
 }
 
 public final class JSArrowFunctionExpression: JSNode, @unchecked Sendable {
+    public var typeParameters: String?
     public var params: [JSNode]
     public var body: JSNode
     public var isAsync: Bool
     public var returnType: String?
+    public var isCurried: Bool
 
-    public init(params: [JSNode], body: JSNode, isAsync: Bool = false, returnType: String? = nil, range: Range<Int> = 0..<0) {
+    public init(typeParameters: String? = nil, params: [JSNode], body: JSNode, isAsync: Bool = false, returnType: String? = nil, isCurried: Bool = false, range: Range<Int> = 0..<0) {
+        self.typeParameters = typeParameters
         self.params = params
         self.body = body
         self.isAsync = isAsync
         self.returnType = returnType
+        self.isCurried = isCurried
         super.init(sourceRange: range)
     }
 
@@ -247,11 +253,15 @@ public final class JSProperty: JSNode, @unchecked Sendable {
     public var key: JSNode
     public var value: JSNode
     public var shorthand: Bool
+    public var method: Bool
+    public var computed: Bool
 
-    public init(key: JSNode, value: JSNode, shorthand: Bool = false, range: Range<Int> = 0..<0) {
+    public init(key: JSNode, value: JSNode, shorthand: Bool = false, method: Bool = false, computed: Bool = false, range: Range<Int> = 0..<0) {
         self.key = key
         self.value = value
         self.shorthand = shorthand
+        self.method = method
+        self.computed = computed
         super.init(sourceRange: range)
     }
 
@@ -575,3 +585,138 @@ public final class JSAwaitExpression: JSNode, @unchecked Sendable {
         [argument]
     }
 }
+
+public final class JSTypeAssertionExpression: JSNode, @unchecked Sendable {
+    public var expression: JSNode
+    public var typeAnnotation: String
+
+    public init(expression: JSNode, typeAnnotation: String, range: Range<Int> = 0..<0) {
+        self.expression = expression
+        self.typeAnnotation = typeAnnotation
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [expression]
+    }
+}
+
+public final class JSParenthesizedExpression: JSNode, @unchecked Sendable {
+    public var expression: JSNode
+
+    public init(expression: JSNode, range: Range<Int> = 0..<0) {
+        self.expression = expression
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [expression]
+    }
+}
+
+public final class JSDeclareGlobalStatement: JSNode, @unchecked Sendable {
+    public var body: JSBlockStatement
+
+    public init(body: JSBlockStatement, range: Range<Int> = 0..<0) {
+        self.body = body
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [body]
+    }
+}
+
+public final class JSSwitchStatement: JSNode, @unchecked Sendable {
+    public var discriminant: JSNode
+    public var cases: [JSSwitchCase]
+
+    public init(discriminant: JSNode, cases: [JSSwitchCase], range: Range<Int> = 0..<0) {
+        self.discriminant = discriminant
+        self.cases = cases
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var children: [any CommentAttachable] = [discriminant]
+        children.append(contentsOf: cases)
+        return children
+    }
+}
+
+public final class JSSwitchCase: JSNode, @unchecked Sendable {
+    public var test: JSNode?
+    public var consequent: [JSNode]
+
+    public init(test: JSNode?, consequent: [JSNode], range: Range<Int> = 0..<0) {
+        self.test = test
+        self.consequent = consequent
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        var children: [any CommentAttachable] = []
+        if let test { children.append(test) }
+        children.append(contentsOf: consequent)
+        return children
+    }
+}
+
+public final class JSBreakStatement: JSNode, @unchecked Sendable {
+    public var label: JSIdentifier?
+
+    public init(label: JSIdentifier? = nil, range: Range<Int> = 0..<0) {
+        self.label = label
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        if let label { return [label] }
+        return []
+    }
+}
+
+public final class JSContinueStatement: JSNode, @unchecked Sendable {
+    public var label: JSIdentifier?
+
+    public init(label: JSIdentifier? = nil, range: Range<Int> = 0..<0) {
+        self.label = label
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        if let label { return [label] }
+        return []
+    }
+}
+
+public final class JSConditionalExpression: JSNode, @unchecked Sendable {
+    public var test: JSNode
+    public var consequent: JSNode
+    public var alternate: JSNode
+
+    public init(test: JSNode, consequent: JSNode, alternate: JSNode, range: Range<Int> = 0..<0) {
+        self.test = test
+        self.consequent = consequent
+        self.alternate = alternate
+        super.init(sourceRange: range)
+    }
+
+    public override var childNodes: [any CommentAttachable] {
+        [test, consequent, alternate]
+    }
+}
+
+public final class JSRegExpLiteral: JSNode, @unchecked Sendable {
+    public var pattern: String
+    public var flags: String
+    public var raw: String
+
+    public init(pattern: String, flags: String, raw: String, range: Range<Int> = 0..<0) {
+        self.pattern = pattern
+        self.flags = flags
+        self.raw = raw
+        super.init(sourceRange: range)
+    }
+}
+
