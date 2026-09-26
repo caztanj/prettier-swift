@@ -14,15 +14,15 @@ A high-performance native Swift port of [Prettier](https://prettier.io) with 100
 
 Tested against official Node.js Prettier on Apple Silicon (10 cores):
 
-| Language | Filesize | prettier-swift | node prettier | Speedup | Parity |
-|:---|:---|:---|:---|:---|:---|
-| **JSON** | 171B | 5.2ms | 54.6ms | **10.6x** | ✅ MATCH |
-| **YAML** | 89B | 4.9ms | 47.8ms | **9.7x** | ✅ MATCH |
-| **Markdown** | 139B | 5.2ms | 51.4ms | **9.9x** | ✅ MATCH |
-| **CSS** | 57B | 4.8ms | 47.4ms | **9.8x** | ✅ MATCH |
-| **HTML** | 123B | 4.9ms | 49.9ms | **10.3x** | ✅ MATCH |
-| **JavaScript** | 123B | 4.9ms | 51.6ms | **10.5x** | ✅ MATCH |
-| **GraphQL** | 76B | 4.9ms | 43.5ms | **8.8x** | ✅ MATCH |
+| Language | Filesize | prettier-swift | node prettier | Speedup |
+|:---|:---|:---|:---|:---|
+| **JSON** | 171B | 5.2ms | 54.6ms | **10.6x** |
+| **YAML** | 89B | 4.9ms | 47.8ms | **9.7x** |
+| **Markdown** | 139B | 5.2ms | 51.4ms | **9.9x** |
+| **CSS** | 57B | 4.8ms | 47.4ms | **9.8x** |
+| **HTML** | 123B | 4.9ms | 49.9ms | **10.3x** |
+| **JavaScript** | 123B | 4.9ms | 51.6ms | **10.5x** |
+| **GraphQL** | 76B | 4.9ms | 43.5ms | **8.8x** |
 
 *100 files batch formatted in parallel: **14.5 ms** (0.14 ms/file).*
 
