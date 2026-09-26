@@ -447,6 +447,23 @@ struct JSPrinterTests {
         #expect(formatted == expected)
     }
 
+    @Test("Keep callback function header on first line when fitting")
+    func testCallbackHeaderOnFirstLineWhenFitting() throws {
+        let input = """
+        const isPending = useSelector<ReduxStore, boolean>((state) => {
+          return state.pending;
+        });
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        const isPending = useSelector<ReduxStore, boolean>((state) => {
+          return state.pending;
+        });
+
+        """
+        #expect(formatted == expected)
+    }
+
     @Test("Plugin can format JS/TS by extension and parser name")
     func testPluginRegistration() throws {
         let plugin = JSPlugin()

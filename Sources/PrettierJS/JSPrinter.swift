@@ -158,15 +158,39 @@ public func printJSNode(
             innerDoc = .concat([calleeDoc, typeArgsDoc, .text("()")])
         } else {
             let argDocs = call.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
-            let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
-            innerDoc = group(.concat([
-                calleeDoc,
-                typeArgsDoc,
-                .text("("),
-                .indent(.concat([.softline, .concat(argsBody)])),
-                .softline,
-                .text(")")
-            ]))
+            if shouldHugCallArguments(call.arguments) {
+                let huggedArgs = join(separator: .text(", "), argDocs)
+                let huggedDoc = Doc.concat([
+                    calleeDoc,
+                    typeArgsDoc,
+                    .text("("),
+                    .concat(huggedArgs),
+                    .text(")")
+                ])
+                let brokenArgs = join(separator: .concat([.text(","), .line]), argDocs)
+                let brokenDoc = Doc.group(
+                    contents: .concat([
+                        calleeDoc,
+                        typeArgsDoc,
+                        .text("("),
+                        .indent(.concat([.line, .concat(brokenArgs)])),
+                        .line,
+                        .text(")")
+                    ]),
+                    shouldBreak: true
+                )
+                innerDoc = conditionalGroup([huggedDoc, brokenDoc])
+            } else {
+                let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
+                innerDoc = group(.concat([
+                    calleeDoc,
+                    typeArgsDoc,
+                    .text("("),
+                    .indent(.concat([.softline, .concat(argsBody)])),
+                    .softline,
+                    .text(")")
+                ]))
+            }
         }
 
     case let member as JSMemberExpression:
@@ -380,16 +404,42 @@ public func printJSNode(
             innerDoc = .concat([.text("new "), calleeDoc, typeArgsDoc, .text("()")])
         } else {
             let argDocs = newExpr.arguments.map { printJSNode($0, options: options, sourceText: sourceText) }
-            let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
-            innerDoc = group(.concat([
-                .text("new "),
-                calleeDoc,
-                typeArgsDoc,
-                .text("("),
-                .indent(.concat([.softline, .concat(argsBody)])),
-                .softline,
-                .text(")")
-            ]))
+            if shouldHugCallArguments(newExpr.arguments) {
+                let huggedArgs = join(separator: .text(", "), argDocs)
+                let huggedDoc = Doc.concat([
+                    .text("new "),
+                    calleeDoc,
+                    typeArgsDoc,
+                    .text("("),
+                    .concat(huggedArgs),
+                    .text(")")
+                ])
+                let brokenArgs = join(separator: .concat([.text(","), .line]), argDocs)
+                let brokenDoc = Doc.group(
+                    contents: .concat([
+                        .text("new "),
+                        calleeDoc,
+                        typeArgsDoc,
+                        .text("("),
+                        .indent(.concat([.line, .concat(brokenArgs)])),
+                        .line,
+                        .text(")")
+                    ]),
+                    shouldBreak: true
+                )
+                innerDoc = conditionalGroup([huggedDoc, brokenDoc])
+            } else {
+                let argsBody = join(separator: .concat([.text(","), .line]), argDocs)
+                innerDoc = group(.concat([
+                    .text("new "),
+                    calleeDoc,
+                    typeArgsDoc,
+                    .text("("),
+                    .indent(.concat([.softline, .concat(argsBody)])),
+                    .softline,
+                    .text(")")
+                ]))
+            }
         }
 
 
@@ -573,4 +623,25 @@ private func splitTypeArguments(_ inner: String) -> [String] {
     let last = String(inner[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
     if !last.isEmpty { parts.append(last) }
     return parts
+}
+
+private func shouldHugCallArguments(_ args: [JSNode]) -> Bool {
+    guard !args.isEmpty else { return false }
+    if args.count == 1 {
+        return isHuggableArg(args[0])
+    }
+    if isHuggableArg(args.last!) || isHuggableArg(args.first!) {
+        return true
+    }
+    return false
+}
+
+private func isHuggableArg(_ node: JSNode) -> Bool {
+    if let arrow = node as? JSArrowFunctionExpression {
+        return arrow.body is JSBlockStatement
+    }
+    if node is JSFunctionDeclaration {
+        return true
+    }
+    return false
 }
