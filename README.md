@@ -98,3 +98,7 @@ Compile:
 ```bash
 clang main.c -I include -L .build/out/Products/Release -lPrettierDynamic -o main
 ```
+
+## Support
+
+If you find this project useful and would like to support its development, you can [sponsor me on GitHub](https://github.com/sponsors/caztanj) or [buy me a coffee!](https://buymeacoffee.com/caztanj)
