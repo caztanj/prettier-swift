@@ -2215,14 +2215,7 @@ private struct JSParserImpl {
         }
 
         if ch.isNumber {
-            let start = index
-            let startOffset = source.distance(from: source.startIndex, to: index)
-            while index < source.endIndex && (source[index].isNumber || source[index] == "." || source[index] == "x" || source[index] == "b") {
-                index = source.index(after: index)
-            }
-            let numStr = String(source[start..<index])
-            let endOffset = source.distance(from: source.startIndex, to: index)
-            return JSLiteral(value: numStr, raw: numStr, isString: false, range: startOffset..<endOffset)
+            return parseNumberLiteral()
         }
 
         if ch == "{" {
@@ -2257,14 +2250,7 @@ private struct JSParserImpl {
                         }
                         keyNode = computed
                     } else if source[index].isNumber {
-                        let keyStart = source.distance(from: source.startIndex, to: index)
-                        let start = index
-                        while index < source.endIndex && (source[index].isNumber || source[index] == ".") {
-                            index = source.index(after: index)
-                        }
-                        let numStr = String(source[start..<index])
-                        let keyEnd = source.distance(from: source.startIndex, to: index)
-                        keyNode = JSLiteral(value: numStr, raw: numStr, isString: false, range: keyStart..<keyEnd)
+                        keyNode = parseNumberLiteral()
                     } else {
                         let keyStart = source.distance(from: source.startIndex, to: index)
                         let keyName = scanWord()
@@ -2541,6 +2527,44 @@ private struct JSParserImpl {
             arrowRange = min(start, end)..<max(start, end)
         }
         return JSArrowFunctionExpression(typeParameters: typeParameters, params: params, body: body, isAsync: isAsync, returnType: returnType, range: arrowRange)
+    }
+
+    private mutating func parseNumberLiteral() -> JSLiteral {
+        let start = index
+        let startOffset = source.distance(from: source.startIndex, to: index)
+        if index < source.endIndex && (source[index...].hasPrefix("0x") || source[index...].hasPrefix("0X")) {
+            index = source.index(index, offsetBy: 2)
+            while index < source.endIndex && (source[index].isHexDigit || source[index] == "_" || source[index] == "n") {
+                index = source.index(after: index)
+            }
+        } else if index < source.endIndex && (source[index...].hasPrefix("0b") || source[index...].hasPrefix("0B")) {
+            index = source.index(index, offsetBy: 2)
+            while index < source.endIndex && (source[index] == "0" || source[index] == "1" || source[index] == "_" || source[index] == "n") {
+                index = source.index(after: index)
+            }
+        } else if index < source.endIndex && (source[index...].hasPrefix("0o") || source[index...].hasPrefix("0O")) {
+            index = source.index(index, offsetBy: 2)
+            while index < source.endIndex && ((source[index] >= "0" && source[index] <= "7") || source[index] == "_" || source[index] == "n") {
+                index = source.index(after: index)
+            }
+        } else {
+            while index < source.endIndex {
+                let c = source[index]
+                if c.isNumber || c == "." || c == "_" || c == "n" {
+                    index = source.index(after: index)
+                } else if c == "e" || c == "E" {
+                    index = source.index(after: index)
+                    if index < source.endIndex && (source[index] == "+" || source[index] == "-") {
+                        index = source.index(after: index)
+                    }
+                } else {
+                    break
+                }
+            }
+        }
+        let numStr = String(source[start..<index])
+        let endOffset = source.distance(from: source.startIndex, to: index)
+        return JSLiteral(value: numStr, raw: numStr, isString: false, range: startOffset..<endOffset)
     }
 
     private mutating func parseStringLiteral() -> JSLiteral {

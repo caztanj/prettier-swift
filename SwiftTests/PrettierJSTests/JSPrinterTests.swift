@@ -552,4 +552,57 @@ struct JSPrinterTests {
         let formatted = try formatJS(input)
         #expect(formatted == input)
     }
+
+    @Test("Chained calls do not cause infinite recursion")
+    func testChainedCalls() throws {
+        let input = "request(app).get('/').expect(200);\n"
+        let formatted = try formatJS(input)
+        let expected = "request(app).get(\"/\").expect(200);\n"
+        #expect(formatted == expected)
+    }
+
+    @Test("Assignment with call expression hugs arguments")
+    func testAssignmentCallHugging() throws {
+        let input = """
+        app.request = Object.create(req, {
+          app: { configurable: true, enumerable: true, writable: true, value: app },
+        });
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        app.request = Object.create(req, {
+          app: { configurable: true, enumerable: true, writable: true, value: app },
+        });
+
+        """
+        #expect(formatted == expected)
+    }
+
+    @Test("Hexadecimal and binary number literals")
+    func testHexAndBinaryLiterals() throws {
+        let input = """
+        switch (c) {
+          case 0x3c:
+            return "\\u003c";
+          case 0x3e:
+            return "\\u003e";
+          case 0b101:
+            return 5;
+        }
+        """
+        let formatted = try formatJS(input)
+        let expected = """
+        switch (c) {
+          case 0x3c:
+            return "\\u003c";
+          case 0x3e:
+            return "\\u003e";
+          case 0b101:
+            return 5;
+        }
+
+        """
+        #expect(formatted == expected)
+    }
 }
+

@@ -23,6 +23,13 @@ public protocol LanguagePlugin: Sendable {
     var fileExtensions: [String] { get }
     func canFormat(filePath: String?, parserName: String?) -> Bool
     func format(source: String, options: PrintOptions) throws -> String
+    func format(source: String, filePath: String?, parserName: String?, options: PrintOptions) throws -> String
+}
+
+public extension LanguagePlugin {
+    func format(source: String, filePath: String?, parserName: String?, options: PrintOptions) throws -> String {
+        try format(source: source, options: options)
+    }
 }
 
 public final class PluginRegistry: @unchecked Sendable {
@@ -54,6 +61,6 @@ public final class PluginRegistry: @unchecked Sendable {
         guard let plugin = findPlugin(filePath: filePath, parserName: parserName) else {
             throw FormatError.unsupportedLanguage(filePath: filePath, parser: parserName)
         }
-        return try plugin.format(source: source, options: options)
+        return try plugin.format(source: source, filePath: filePath, parserName: parserName, options: options)
     }
 }

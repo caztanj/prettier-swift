@@ -310,7 +310,7 @@ public func printJSNode(
             } else {
                 let rightDoc = printJSNode(bin.right, options: options, sourceText: sourceText)
                 let shouldHug: Bool
-                if bin.right is JSObjectExpression || bin.right is JSArrayExpression || bin.right is JSFunctionDeclaration {
+                if bin.right is JSObjectExpression || bin.right is JSArrayExpression || bin.right is JSFunctionDeclaration || bin.right is JSCallExpression {
                     shouldHug = true
                 } else if let arrow = bin.right as? JSArrowFunctionExpression {
                     shouldHug = arrow.body is JSBlockStatement || arrow.body is JSObjectExpression
@@ -358,6 +358,7 @@ public func printJSNode(
                 chain.append((member: m, typeArgs: c.typeArguments, args: c.arguments))
                 if let nextCall = m.object as? JSCallExpression {
                     currentCall = nextCall
+                    baseNode = nextCall
                 } else {
                     baseNode = m.object
                     currentCall = nil

@@ -3,12 +3,13 @@ import PrettierCore
 
 public func formatJSON(
     _ source: String,
-    options: PrintOptions = PrintOptions()
+    options: PrintOptions = PrintOptions(),
+    isJSONStringify: Bool = false
 ) throws -> String {
     let (root, comments) = try JSONParser.parse(source)
     attachComments(root: root, comments: comments, sourceText: source)
     let path = AstPath(root)
-    let doc = printJSONNode(path: path, options: options, sourceText: source)
+    let doc = printJSONNode(path: path, options: options, sourceText: source, isJSONStringify: isJSONStringify)
     let output = try printDocToString(doc, options: options)
     return output.formatted
 }
@@ -16,7 +17,8 @@ public func formatJSON(
 public func printJSONNode(
     path: AstPath,
     options: PrintOptions,
-    sourceText: String
+    sourceText: String,
+    isJSONStringify: Bool = false
 ) -> Doc {
     guard let node = path.node as? JSONNode else {
         return .empty
@@ -26,7 +28,7 @@ public func printJSONNode(
     switch node {
     case let root as JSONRoot:
         let printedValue = path.call(key: "value", root.value) { p in
-            printJSONNode(path: p, options: options, sourceText: sourceText)
+            printJSONNode(path: p, options: options, sourceText: sourceText, isJSONStringify: isJSONStringify)
         }
         innerDoc = .concat([printedValue, .hardline])
 
@@ -40,7 +42,7 @@ public func printJSONNode(
             }
         } else {
             let printedProps = path.map(key: "properties", obj.properties) { p, _, _ in
-                printJSONNode(path: p, options: options, sourceText: sourceText)
+                printJSONNode(path: p, options: options, sourceText: sourceText, isJSONStringify: isJSONStringify)
             }
             let body = join(separator: .concat([",", .line]), printedProps)
             innerDoc = group(.concat([
@@ -48,15 +50,15 @@ public func printJSONNode(
                 .indent([.line, .concat(body)]),
                 .line,
                 "}"
-            ]))
+            ]), shouldBreak: isJSONStringify)
         }
 
     case let prop as JSONProperty:
         let keyDoc = path.call(key: "key", prop.key) { p in
-            printJSONNode(path: p, options: options, sourceText: sourceText)
+            printJSONNode(path: p, options: options, sourceText: sourceText, isJSONStringify: isJSONStringify)
         }
         let valDoc = path.call(key: "value", prop.value) { p in
-            printJSONNode(path: p, options: options, sourceText: sourceText)
+            printJSONNode(path: p, options: options, sourceText: sourceText, isJSONStringify: isJSONStringify)
         }
         innerDoc = .concat([keyDoc, ": ", valDoc])
 
@@ -70,15 +72,16 @@ public func printJSONNode(
             }
         } else {
             let printedElements = path.map(key: "elements", arr.elements) { p, _, _ in
-                printJSONNode(path: p, options: options, sourceText: sourceText)
+                printJSONNode(path: p, options: options, sourceText: sourceText, isJSONStringify: isJSONStringify)
             }
             let body = join(separator: .concat([",", .line]), printedElements)
+            let lineDoc = isJSONStringify ? Doc.line : Doc.softline
             innerDoc = group(.concat([
                 "[",
-                .indent([.softline, .concat(body)]),
-                .softline,
+                .indent([lineDoc, .concat(body)]),
+                lineDoc,
                 "]"
-            ]))
+            ]), shouldBreak: isJSONStringify)
         }
 
     case let str as JSONString:
