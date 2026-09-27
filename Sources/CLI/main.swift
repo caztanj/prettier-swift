@@ -204,6 +204,11 @@ func run() -> Int32 {
     }
 
     @Sendable func readFileOptimized(at filePath: String) throws -> String {
+#if os(Windows)
+        let url = URL(fileURLWithPath: filePath)
+        let data = try Data(contentsOf: url)
+        return String(decoding: data, as: UTF8.self)
+#else
         let fd = open(filePath, O_RDONLY)
         guard fd >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
@@ -235,6 +240,7 @@ func run() -> Int32 {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return String(decoding: bytes, as: UTF8.self)
+#endif
     }
 
     @Sendable func writeFileOptimized(at filePath: String, content: String) throws {
