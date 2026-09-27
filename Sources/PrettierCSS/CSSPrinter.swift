@@ -37,12 +37,25 @@ public func printCSSNode(
         if rule.body.isEmpty {
             innerDoc = .concat([selectorDoc, " {}"])
         } else {
-            let bodyDocs = rule.body.map { printCSSNode($0, options: options, sourceText: sourceText) }
-            let bodyContent = join(separator: .hardline, bodyDocs)
+            var bodyDocs: [Doc] = []
+            for i in 0..<rule.body.count {
+                let current = rule.body[i]
+                bodyDocs.append(printCSSNode(current, options: options, sourceText: sourceText))
+                if i < rule.body.count - 1 {
+                    let next = rule.body[i + 1]
+                    let isCurrentDecl = current is CSSDeclaration
+                    let isNextDecl = next is CSSDeclaration
+                    if isCurrentDecl && isNextDecl {
+                        bodyDocs.append(.hardline)
+                    } else {
+                        bodyDocs.append(.concat([.hardline, .hardline]))
+                    }
+                }
+            }
             innerDoc = .concat([
                 selectorDoc,
                 " {",
-                .indent([.hardline, .concat(bodyContent)]),
+                .indent([.hardline, .concat(bodyDocs)]),
                 .hardline,
                 "}"
             ])
@@ -62,14 +75,25 @@ public func printCSSNode(
             if block.isEmpty {
                 innerDoc = .text("\(prefix) {}")
             } else {
-                let bodyDocs = block.map { printCSSNode($0, options: options, sourceText: sourceText) }
-                let isAllDeclarations = block.allSatisfy { $0 is CSSDeclaration }
-                let separator: Doc = isAllDeclarations ? .hardline : .concat([.hardline, .hardline])
-                let bodyContent = join(separator: separator, bodyDocs)
+                var bodyDocs: [Doc] = []
+                for i in 0..<block.count {
+                    let current = block[i]
+                    bodyDocs.append(printCSSNode(current, options: options, sourceText: sourceText))
+                    if i < block.count - 1 {
+                        let next = block[i + 1]
+                        let isCurrentDecl = current is CSSDeclaration
+                        let isNextDecl = next is CSSDeclaration
+                        if isCurrentDecl && isNextDecl {
+                            bodyDocs.append(.hardline)
+                        } else {
+                            bodyDocs.append(.concat([.hardline, .hardline]))
+                        }
+                    }
+                }
                 innerDoc = .concat([
                     .text(prefix),
                     " {",
-                    .indent([.hardline, .concat(bodyContent)]),
+                    .indent([.hardline, .concat(bodyDocs)]),
                     .hardline,
                     "}"
                 ])

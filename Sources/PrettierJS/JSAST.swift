@@ -279,18 +279,28 @@ public final class JSProperty: JSNode, @unchecked Sendable {
     public var shorthand: Bool
     public var method: Bool
     public var computed: Bool
+    public var isStatic: Bool
+    public var kind: String?
 
-    public init(key: JSNode, value: JSNode, shorthand: Bool = false, method: Bool = false, computed: Bool = false, range: Range<Int> = 0..<0) {
+    public init(key: JSNode, value: JSNode, shorthand: Bool = false, method: Bool = false, computed: Bool = false, isStatic: Bool = false, kind: String? = nil, range: Range<Int> = 0..<0) {
         self.key = key
         self.value = value
         self.shorthand = shorthand
         self.method = method
         self.computed = computed
+        self.isStatic = isStatic
+        self.kind = kind
         super.init(sourceRange: range)
     }
 
     public override var childNodes: [any CommentAttachable] {
-        shorthand ? [key] : [key, value]
+        if shorthand {
+            return [key]
+        }
+        if let ident = value as? JSIdentifier, ident.name.isEmpty {
+            return [key]
+        }
+        return [key, value]
     }
 }
 

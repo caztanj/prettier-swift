@@ -6,6 +6,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(CRT)
+import CRT
 #endif
 import Prettier
 
@@ -56,6 +58,9 @@ func writeToStderr(_ message: String) {
 }
 
 func run() -> Int32 {
+#if os(Windows)
+    _ = _setmode(_fileno(stdout), 0x8000)
+#endif
     var config = CLIConfig()
     let args = Array(CommandLine.arguments.dropFirst())
 

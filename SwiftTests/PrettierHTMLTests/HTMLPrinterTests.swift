@@ -48,8 +48,8 @@ struct HTMLPrinterTests {
         let formatted = try formatHTML(input)
         let expected = """
         <div id="container" class="wrapper">
-          <img src="logo.png" alt="Logo">
-          <input type="text" disabled>
+          <img src="logo.png" alt="Logo" />
+          <input type="text" disabled />
         </div>
 
         """

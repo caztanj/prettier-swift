@@ -50,10 +50,8 @@ public func printHTMLNode(
             openTagAttrs = .concat([.text(" "), group(.concat(joined))])
         }
 
-        if elem.isSelfClosing {
+        if elem.isSelfClosing || elem.isVoid {
             innerDoc = .concat([openTagStart, openTagAttrs, .text(" />")])
-        } else if elem.isVoid {
-            innerDoc = .concat([openTagStart, openTagAttrs, .text(">")])
         } else if elem.children.isEmpty {
             innerDoc = .concat([openTagStart, openTagAttrs, .text("></\(tag)>")])
         } else if elem.children.count == 1, let textNode = elem.children[0] as? HTMLText {

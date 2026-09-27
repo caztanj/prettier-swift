@@ -59,7 +59,7 @@ public func printJSNode(
                 let shouldHug: Bool
                 if isPureCall {
                     shouldHug = false
-                } else if initVal is JSObjectExpression || initVal is JSArrayExpression || initVal is JSFunctionDeclaration || initVal is JSTypeAssertionExpression {
+                } else if initVal is JSObjectExpression || initVal is JSArrayExpression || initVal is JSFunctionDeclaration || initVal is JSTypeAssertionExpression || initVal is JSTemplateLiteral {
                     shouldHug = true
                 } else if initVal is JSCallExpression {
                     shouldHug = true
@@ -110,13 +110,8 @@ public func printJSNode(
         if cls.body.isEmpty {
             parts.append(.text("}"))
         } else {
-            var bodyDocs: [Doc] = []
-            for member in cls.body {
-                let memberDoc = printJSNode(member, options: options, sourceText: sourceText)
-                bodyDocs.append(memberDoc)
-            }
-            let joinedBody = join(separator: .hardline, bodyDocs)
-            parts.append(.indent(.concat([.hardline, .concat(joinedBody)])))
+            let bodyDocs = printStatementSequence(cls.body, options: options, sourceText: sourceText)
+            parts.append(.indent(.concat([.hardline, .concat(bodyDocs)])))
             parts.append(.hardline)
             parts.append(.text("}"))
         }
@@ -365,7 +360,7 @@ public func printJSNode(
                 }
             }
 
-            if chain.count >= 2 {
+            if chain.count >= 3 {
                 chain.reverse()
                 let baseDoc = printJSNode(baseNode, options: options, sourceText: sourceText)
 
@@ -531,18 +526,22 @@ public func printJSNode(
         if lit.isString {
             if options.singleQuote {
                 if lit.value.contains("'") && !lit.value.contains("\"") {
-                    let escaped = lit.value.replacingOccurrences(of: "\"", with: "\\\"")
+                    let unescaped = lit.value.replacingOccurrences(of: "\\'", with: "'")
+                    let escaped = unescaped.replacingOccurrences(of: "\"", with: "\\\"")
                     innerDoc = .text("\"\(escaped)\"")
                 } else {
-                    let escaped = lit.value.replacingOccurrences(of: "'", with: "\\'")
+                    let unescaped = lit.value.replacingOccurrences(of: "\\\"", with: "\"")
+                    let escaped = unescaped.replacingOccurrences(of: "'", with: "\\'")
                     innerDoc = .text("'\(escaped)'")
                 }
             } else {
                 if lit.value.contains("\"") && !lit.value.contains("'") {
-                    let escaped = lit.value.replacingOccurrences(of: "'", with: "\\'")
+                    let unescaped = lit.value.replacingOccurrences(of: "\\\"", with: "\"")
+                    let escaped = unescaped.replacingOccurrences(of: "'", with: "\\'")
                     innerDoc = .text("'\(escaped)'")
                 } else {
-                    let escaped = lit.value.replacingOccurrences(of: "\"", with: "\\\"")
+                    let unescaped = lit.value.replacingOccurrences(of: "\\'", with: "'")
+                    let escaped = unescaped.replacingOccurrences(of: "\"", with: "\\\"")
                     innerDoc = .text("\"\(escaped)\"")
                 }
             }
@@ -938,6 +937,13 @@ public func printJSNode(
         let keyDoc = prop.computed ? Doc.concat([.text("["), rawKeyDoc, .text("]")]) : rawKeyDoc
 
         if prop.method, let fn = prop.value as? JSFunctionDeclaration {
+            let staticPrefix = prop.isStatic ? "static " : ""
+            let kindPrefix: String
+            if let kind = prop.kind, kind == "get" || kind == "set" {
+                kindPrefix = "\(kind) "
+            } else {
+                kindPrefix = ""
+            }
             let typeParamsDoc: Doc
             if let typeParams = fn.typeParameters, !typeParams.isEmpty {
                 typeParamsDoc = printTypeArgumentsDoc(typeParams)
@@ -946,11 +952,25 @@ public func printJSNode(
             }
             let paramDocs = fn.params.map { printJSNode($0, options: options, sourceText: sourceText) }
             let joinedParams = join(separator: .text(", "), paramDocs)
-            let paramsDoc = Doc.concat([.text("("), .concat(joinedParams), .text(")")])
+            let paramsDoc: Doc
+            if prop.kind == "get" && fn.params.isEmpty {
+                paramsDoc = .text("()")
+            } else {
+                paramsDoc = Doc.concat([.text("("), .concat(joinedParams), .text(")")])
+            }
             let returnTypeDoc = fn.returnType != nil ? Doc.text(": \(fn.returnType!)") : .empty
             let bodyDoc = fn.body != nil ? printJSNode(fn.body!, options: options, sourceText: sourceText) : .empty
             let asyncPrefix = fn.isAsync ? "async " : ""
-            innerDoc = .concat([.text(asyncPrefix), keyDoc, typeParamsDoc, paramsDoc, returnTypeDoc, .text(" "), bodyDoc])
+            innerDoc = .concat([.text(staticPrefix), .text(asyncPrefix), .text(kindPrefix), keyDoc, typeParamsDoc, paramsDoc, returnTypeDoc, .text(" "), bodyDoc])
+        } else if prop.kind == "property" || prop.isStatic {
+            let staticPrefix = prop.isStatic ? "static " : ""
+            let semiDoc: Doc = options.semi ? .text(";") : .empty
+            if let ident = prop.value as? JSIdentifier, ident.name.isEmpty {
+                innerDoc = .concat([.text(staticPrefix), keyDoc, semiDoc])
+            } else {
+                let valDoc = printJSNode(prop.value, options: options, sourceText: sourceText)
+                innerDoc = .concat([.text(staticPrefix), keyDoc, .text(" = "), valDoc, semiDoc])
+            }
         } else if prop.shorthand {
             innerDoc = keyDoc
         } else {
@@ -1243,7 +1263,7 @@ private func shouldHugCallArguments(_ args: [JSNode]) -> Bool {
         return false
     }
     if args.count == 1 {
-        return isHuggableArg(args[0])
+        return isSimpleArg(args[0]) || isHuggableArg(args[0])
     }
     if isHuggableArg(args.last!) {
         let preceding = args.dropLast()

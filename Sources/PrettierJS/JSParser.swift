@@ -875,26 +875,100 @@ private struct JSParserImpl {
                         continue
                     }
                     let memberStart = source.distance(from: source.startIndex, to: index)
+                    var isStatic = false
                     var isAsync = false
-                    if matchKeyword("async") {
-                        let saved = index
-                        _ = scanWord()
+                    var kind: String? = nil
+
+                    while index < source.endIndex {
                         skipWhitespaceAndComments()
-                        if index < source.endIndex && (source[index].isLetter || source[index] == "_" || source[index] == "$") {
-                            isAsync = true
-                        } else {
-                            index = saved
+                        if matchKeyword("static") {
+                            let saved = index
+                            _ = scanWord()
+                            skipWhitespaceAndComments()
+                            if index < source.endIndex && source[index] != "(" && source[index] != ":" && source[index] != "=" && source[index] != ";" && source[index] != "}" {
+                                isStatic = true
+                                continue
+                            } else {
+                                index = saved
+                                break
+                            }
                         }
+                        if matchKeyword("async") {
+                            let saved = index
+                            _ = scanWord()
+                            skipWhitespaceAndComments()
+                            if index < source.endIndex && source[index] != "(" && source[index] != ":" && source[index] != "=" && source[index] != ";" && source[index] != "}" {
+                                isAsync = true
+                                continue
+                            } else {
+                                index = saved
+                                break
+                            }
+                        }
+                        if matchKeyword("get") {
+                            let saved = index
+                            _ = scanWord()
+                            skipWhitespaceAndComments()
+                            if index < source.endIndex && source[index] != "(" && source[index] != ":" && source[index] != "=" && source[index] != ";" && source[index] != "}" {
+                                kind = "get"
+                                continue
+                            } else {
+                                index = saved
+                                break
+                            }
+                        }
+                        if matchKeyword("set") {
+                            let saved = index
+                            _ = scanWord()
+                            skipWhitespaceAndComments()
+                            if index < source.endIndex && source[index] != "(" && source[index] != ":" && source[index] != "=" && source[index] != ";" && source[index] != "}" {
+                                kind = "set"
+                                continue
+                            } else {
+                                index = saved
+                                break
+                            }
+                        }
+                        break
                     }
+
+                    skipWhitespaceAndComments()
+                    guard index < source.endIndex && source[index] != "}" else { break }
+
+                    var isComputed = false
                     let keyStart = source.distance(from: source.startIndex, to: index)
-                    let key = scanWord()
-                    let keyEnd = source.distance(from: source.startIndex, to: index)
+                    let keyNode: JSNode
+
+                    if source[index] == "[" {
+                        isComputed = true
+                        index = source.index(after: index)
+                        skipWhitespaceAndComments()
+                        keyNode = try parseExpression()
+                        skipWhitespaceAndComments()
+                        if index < source.endIndex && source[index] == "]" {
+                            index = source.index(after: index)
+                        }
+                    } else if source[index] == "\"" || source[index] == "'" {
+                        keyNode = parseStringLiteral()
+                    } else {
+                        let name: String
+                        if source[index] == "#" {
+                            index = source.index(after: index)
+                            name = "#" + scanWord()
+                        } else {
+                            name = scanWord()
+                        }
+                        let keyEnd = source.distance(from: source.startIndex, to: index)
+                        keyNode = JSIdentifier(name: name, range: keyStart..<keyEnd)
+                    }
+
                     skipWhitespaceAndComments()
                     var memberTypeParams: String? = nil
                     if index < source.endIndex && source[index] == "<" {
                         memberTypeParams = scanTypeParameters()
                     }
                     skipWhitespaceAndComments()
+
                     if index < source.endIndex && source[index] == "(" {
                         let params = try parseParameterList()
                         skipWhitespaceAndComments()
@@ -909,14 +983,27 @@ private struct JSParserImpl {
                         }
                         let memberEnd = source.distance(from: source.startIndex, to: index)
                         let fnNode = JSFunctionDeclaration(id: nil, typeParameters: memberTypeParams, params: params, body: body, isAsync: isAsync, returnType: returnType, range: memberStart..<memberEnd)
-                        members.append(JSProperty(key: JSIdentifier(name: key, range: keyStart..<keyEnd), value: fnNode, method: true, range: memberStart..<memberEnd))
+                        members.append(JSProperty(key: keyNode, value: fnNode, shorthand: false, method: true, computed: isComputed, isStatic: isStatic, kind: kind, range: memberStart..<memberEnd))
                     } else {
-                        while index < source.endIndex && source[index] != ";" && source[index] != "\n" && source[index] != "}" {
-                            index = source.index(after: index)
+                        var returnType: String? = nil
+                        if index < source.endIndex && source[index] == ":" {
+                            returnType = scanReturnType()
                         }
+                        skipWhitespaceAndComments()
+                        var initValue: JSNode
+                        if index < source.endIndex && source[index] == "=" {
+                            index = source.index(after: index)
+                            skipWhitespaceAndComments()
+                            initValue = try parseExpression()
+                        } else {
+                            initValue = JSIdentifier(name: "", range: memberStart..<memberStart)
+                        }
+                        skipWhitespaceAndComments()
                         if index < source.endIndex && source[index] == ";" {
                             index = source.index(after: index)
                         }
+                        let memberEnd = source.distance(from: source.startIndex, to: index)
+                        members.append(JSProperty(key: keyNode, value: initValue, shorthand: false, method: false, computed: isComputed, isStatic: isStatic, kind: "property", range: memberStart..<memberEnd))
                     }
                 }
             }

@@ -225,6 +225,7 @@ private struct CSSParserImpl {
     private mutating func scanUntilAny(_ delimiters: [Character]) -> (String, Character?) {
         let start = index
         var parenDepth = 0
+        var interpolationDepth = 0
 
         while index < source.endIndex {
             let ch = source[index]
@@ -263,6 +264,22 @@ private struct CSSParserImpl {
                 } else {
                     index = source.endIndex
                 }
+                continue
+            }
+
+            if ch == "#" && source.index(after: index) < source.endIndex && source[source.index(after: index)] == "{" {
+                interpolationDepth += 1
+                index = source.index(index, offsetBy: 2)
+                continue
+            }
+
+            if interpolationDepth > 0 {
+                if ch == "{" {
+                    interpolationDepth += 1
+                } else if ch == "}" {
+                    interpolationDepth -= 1
+                }
+                index = source.index(after: index)
                 continue
             }
 
